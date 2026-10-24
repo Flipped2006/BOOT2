@@ -1,0 +1,31 @@
+{
+    "configurations": [
+        {
+            "name": "bootloader",
+            "includePath": [
+                "app",
+                "driver",
+                "platforms/cmsis/inc",
+                "platforms/cmsis/device",
+                "platforms/driver/inc",
+                "component/crc",
+                "component/easylogger",
+                "component/ringbuffer"
+            ],
+            "defines": [
+                "STM32F407xx",
+                "USE_STDPERIPH_DRIVER",
+                "HSE_VALUE=8000000"
+            ],
+            "compilerPath": "/home/wang/BOOT2/tools/gcc-arm-none-eabi/15.3/bin/arm-none-eabi-gcc",
+            "cStandard": "c11",
+            "cppStandard": "gnu++11",
+            "intelliSenseMode": "linux-gcc-arm",
+            "compilerArgs": [],
+            "browse": {
+                "limitSymbolsToIncludedHeaders": true
+            }
+        }
+    ],
+    "version": 4
+}
