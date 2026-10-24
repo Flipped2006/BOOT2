@@ -38,7 +38,9 @@ BUILD_DIR := build
 C_DIRS := \
 	app \
 	driver \
-	component \
+	component/crc \
+	component/easylogger \
+	component/ringbuffer \
 	platforms/board \
 	platforms/cmsis/device \
 	platforms/driver/src \
@@ -49,7 +51,8 @@ C_SOURCES +=
 
 # ASM sources
 ASM_SOURCES :=  \
-platforms/cmsis/device/startup_stm32f407xx.s
+platforms/cmsis/device/startup_stm32f407xx.s \
+app/jumpapp.s
 
 # ASMM sources
 ASMM_SOURCES :=
@@ -88,7 +91,7 @@ FPU := -mfpu=fpv4-sp-d16
 # float-abi
 FLOAT-ABI := -mfloat-abi=hard
 
-# mcu`
+# mcu
 MCU := $(CPU) -mthumb $(FPU) $(FLOAT-ABI)
 
 # macros for gcc

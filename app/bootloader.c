@@ -4,6 +4,8 @@
 #include <string.h>
 
 #include "stm32f4xx.h"
+#include "stm32f4xx_ll_tim.h"
+#include "stm32f4xx_ll_usart.h"
 
 #include "board.h"
 #include "bl_usart.h"
@@ -252,7 +254,7 @@ static bool bl_rx_packet_parse(uint8_t *data, uint16_t size)
     return false;
 }
 
-static void bl_tx_packet_response(uint8_t opecode, uint8_t errcode, uint16_t len, uint8_t *data)
+static void bl_tx_packet_response(uint8_t opecode, uint8_t errcode, uint16_t len, const uint8_t *data)
 {
     uint8_t *response = packet_buffer, *prsp = packet_buffer;
     put_u8_inc(&prsp, PACKET_HEADER_RESPONSE);
@@ -278,12 +280,12 @@ static void bl_opcode_inquery_handler(void)
     switch (subcode)
     {
     case SUBCODE_INQUERY_VERSION:
-        bl_tx_packet_response(PACKET_OPCODE_INQUERY, PACKET_ERRCODE_OK, sizeof(BL_VERSION), BL_VERSION);
+        bl_tx_packet_response(PACKET_OPCODE_INQUERY, PACKET_ERRCODE_OK, sizeof(BL_VERSION), (const uint8_t *)BL_VERSION);
         break;
     case SUBCODE_INQUERY_MTU:
         mtu[0] = BL_PAYLOAD_BUFFER_SIZE & 0xff;
         mtu[1] = (BL_PAYLOAD_BUFFER_SIZE >> 8) & 0xff;
-        bl_tx_packet_response(PACKET_OPCODE_INQUERY, PACKET_ERRCODE_OK, sizeof(mtu), mtu);
+        bl_tx_packet_response(PACKET_OPCODE_INQUERY, PACKET_ERRCODE_OK, sizeof(mtu), (const uint8_t *)mtu);
         break;
     default:
         break;
@@ -310,9 +312,9 @@ static void app_application(void)
     log_w("app application...");
 
     led_off(led1);
-    USART_DeInit(USART1);
-    USART_DeInit(USART3);
-    TIM_DeInit(TIM6);
+    LL_USART_DeInit(USART1);
+    LL_USART_DeInit(USART3);
+    LL_TIM_DeInit(TIM6);
     NVIC_DisableIRQ(USART1_IRQn);
     NVIC_DisableIRQ(USART3_IRQn);
     NVIC_DisableIRQ(TIM6_DAC_IRQn);
@@ -370,7 +372,7 @@ static void bl_opcode_erase_handler(void)
     log_i("erase address: 0x%08X, size: 0x%08X", addr, size);
 
     stm32_flash_unlock();
-    stm32_flash_erase_sector(addr, size);
+    stm32_flash_erase(addr, size);
     stm32_flash_lock();
     bl_tx_packet_response(PACKET_OPCODE_ERASE, PACKET_ERRCODE_OK, 0, NULL);
 }
@@ -414,7 +416,7 @@ static void bl_opcode_program_handler(void)
     log_i("program address: 0x%08X, size: 0x%08X", addr, size);
 
     stm32_flash_unlock();
-    stm32_flash_program(addr, size, data);
+    stm32_flash_program(addr, data, size);
     stm32_flash_lock();
     bl_tx_packet_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_OK, 0, NULL);
 }

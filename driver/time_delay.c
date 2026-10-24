@@ -1,6 +1,8 @@
 #include <stddef.h>
 
 #include "stm32f4xx.h"
+#include "stm32f4xx_ll_rcc.h"
+#include "stm32f4xx_ll_tim.h"
 
 #include "time_delay.h"
 
@@ -12,32 +14,27 @@ static time_delay_func_t time_delay_func = NULL;
 
 void time_it_init(void)
 {
-    NVIC_InitTypeDef NVIC_InitStructure;
-    NVIC_InitStructure.NVIC_IRQChannel = TIM6_DAC_IRQn;
-    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 5;
-    NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
-    NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
-    NVIC_Init(&NVIC_InitStructure);
+    NVIC_EnableIRQ(TIM6_DAC_IRQn);
     NVIC_SetPriority(TIM6_DAC_IRQn, 5);
 }
 
 void time_lowlevel_init(void)
 {
-    RCC_ClocksTypeDef RCC_Clocks;
-    RCC_GetClocksFreq(&RCC_Clocks);
+    LL_RCC_ClocksTypeDef RCC_Clocks;
+    LL_RCC_GetSystemClocksFreq(&RCC_Clocks);
     uint16_t apb1_freq_mhz = RCC_Clocks.PCLK1_Frequency / 1000000 * 2;
 
-    TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
-    TIM_TimeBaseStructInit(&TIM_TimeBaseStructure);
-    TIM_TimeBaseStructure.TIM_Period = 1000 - 1;
-    TIM_TimeBaseStructure.TIM_Prescaler = apb1_freq_mhz - 1;
-    TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1;
-    TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
-    TIM_TimeBaseInit(TIM6, &TIM_TimeBaseStructure);
+    LL_TIM_InitTypeDef TIM_TimeBaseStructure;
+    LL_TIM_StructInit(&TIM_TimeBaseStructure);
+    TIM_TimeBaseStructure.Autoreload = 1000 - 1;
+    TIM_TimeBaseStructure.Prescaler = apb1_freq_mhz - 1;
+    TIM_TimeBaseStructure.ClockDivision = LL_TIM_CLOCKDIVISION_DIV1;
+    TIM_TimeBaseStructure.CounterMode = LL_TIM_COUNTERMODE_UP;
+    LL_TIM_Init(TIM6, &TIM_TimeBaseStructure);
 
-    TIM_ITConfig(TIM6, TIM_IT_Update, ENABLE);
+    LL_TIM_EnableIT_UPDATE(TIM6);
 
-    TIM_Cmd(TIM6, ENABLE);
+    LL_TIM_EnableCounter(TIM6);
 }
 
 void time_init(void)
@@ -51,7 +48,7 @@ uint64_t time_get_now(void)
     uint64_t now, last_tick;
     do {
         last_tick = time_ticks;
-        now = time_ticks + TIM_GetCounter(TIM6);
+        now = time_ticks + LL_TIM_GetCounter(TIM6);
     } while (last_tick != time_ticks);
     return now;
 }
@@ -85,8 +82,8 @@ void time_delay_func_register(time_delay_func_t func)
 
 void TIM6_DAC_IRQHandler(void)
 {
-    if (TIM_GetITStatus(TIM6, TIM_IT_Update) != RESET) {
-        TIM_ClearITPendingBit(TIM6, TIM_IT_Update);
+    if (LL_TIM_IsActiveFlag_UPDATE(TIM6) != 0) {
+        LL_TIM_ClearFlag_UPDATE(TIM6);
         time_ticks += 1000;
         if (time_delay_func)
             time_delay_func();

@@ -1,6 +1,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "stm32f4xx.h"
+#include "stm32f4xx_ll_gpio.h"
 #include "key.h"
 #include "key_desc.h"
 
@@ -10,16 +11,16 @@
 
 void key_init(key_desc_t key)
 {
-    GPIO_InitTypeDef GPIO_InitStructure;
-    GPIO_StructInit(&GPIO_InitStructure);
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN;
-    GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_DOWN;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Medium_Speed;
-    GPIO_InitStructure.GPIO_Pin = key->pin;
-    GPIO_Init(key->port, &GPIO_InitStructure);
+    LL_GPIO_InitTypeDef GPIO_InitStructure;
+    LL_GPIO_StructInit(&GPIO_InitStructure);
+    GPIO_InitStructure.Mode = LL_GPIO_MODE_INPUT;
+    GPIO_InitStructure.Pull = LL_GPIO_PULL_DOWN;
+    GPIO_InitStructure.Speed = LL_GPIO_SPEED_FREQ_MEDIUM;
+    GPIO_InitStructure.Pin = key->pin;
+    LL_GPIO_Init(key->port, &GPIO_InitStructure);
 }
 
 bool key_read(key_desc_t key)
 {
-    return GPIO_ReadInputDataBit(key->port, key->pin) == key->active_level;
+    return LL_GPIO_IsInputPinSet(key->port, key->pin) == key->active_level;
 }

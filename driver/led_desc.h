@@ -3,6 +3,11 @@
 
 #include "stm32f4xx.h"
 
+typedef enum
+{
+    Bit_RESET = 0,
+    Bit_SET
+} BitAction;
 
 struct led_desc{
     GPIO_TypeDef* port;
