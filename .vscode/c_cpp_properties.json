@@ -5,16 +5,21 @@
             "includePath": [
                 "app",
                 "driver",
+                "component/crc",
+                "component/easylogger",
+                "component/ringbuffer",
+                "platforms/board",
                 "platforms/cmsis/inc",
                 "platforms/cmsis/device",
                 "platforms/driver/inc",
-                "component/crc",
-                "component/easylogger",
-                "component/ringbuffer"
+                "platforms/driver/inc/Legacy",
+                "platforms/syscall",
+                "utils"
             ],
             "defines": [
+                "USE_FULL_LL_DRIVER",
+                "USE_HAL_DRIVER",
                 "STM32F407xx",
-                "USE_STDPERIPH_DRIVER",
                 "HSE_VALUE=8000000"
             ],
             "compilerPath": "/home/wang/BOOT2/tools/gcc-arm-none-eabi/15.3/bin/arm-none-eabi-gcc",
