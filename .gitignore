@@ -1,4 +1,4 @@
 build/*
 utils/*
 tools/gcc-arm-none-eabi
-
+debug

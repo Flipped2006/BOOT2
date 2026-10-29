@@ -28,7 +28,7 @@ static void bl_usart_io_init(void)
 static void bl_usart_lowlevel_init(void)
 {
     LL_USART_InitTypeDef USART_InitStructure;
-    USART_InitStructure.BaudRate = 115200;
+    USART_InitStructure.BaudRate = 2 * 1000 * 1000;
     USART_InitStructure.DataWidth = LL_USART_DATAWIDTH_8B;
     USART_InitStructure.StopBits = LL_USART_STOPBITS_1;
     USART_InitStructure.Parity = LL_USART_PARITY_NONE;
