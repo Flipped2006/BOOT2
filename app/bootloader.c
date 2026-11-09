@@ -224,6 +224,7 @@ static bool bl_rx_packet_parse(uint8_t *data, uint16_t size)
         case PACKET_STATE_CRC16:
             if (packet_buffer_index == PACKET_PAYLOAD_OFFSET + packet_payload_len + PACKET_CRC_SIZE)
             {
+                led_off(led3);
                 uint16_t crc = get_u16(packet_buffer + PACKET_PAYLOAD_OFFSET + packet_payload_len);
                 uint16_t ccrc = crc16(packet_buffer, packet_payload_len + PACKET_PAYLOAD_OFFSET);
                 if (crc == ccrc)
@@ -243,6 +244,7 @@ static bool bl_rx_packet_parse(uint8_t *data, uint16_t size)
                 }
                 packet_buffer_index = 0;
                 packet_buffer_state = PACKET_STATE_HEADER;
+                led_on(led3);
                 return true;
             }
             break;
@@ -415,9 +417,12 @@ static void bl_opcode_program_handler(void)
 
     log_i("program address: 0x%08X, size: 0x%08X", addr, size);
 
+    led_on(led2);
     stm32_flash_unlock();
     stm32_flash_program(addr, data, size);
     stm32_flash_lock();
+    led_off(led2);
+
     bl_tx_packet_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_OK, 0, NULL);
 }
 
@@ -571,6 +576,8 @@ void bootloader_main(void)
     }
 
     led_init(led1);
+    led_init(led2);
+    led_init(led3);
     led_on(led1);
 
     key_wait_release();
