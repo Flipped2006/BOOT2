@@ -43,15 +43,15 @@ C_DIRS := \
 	component/ringbuffer \
     component/freertos/inc \
     component/freertos/src \
-    component/freertos/mem \
     component/freertos/port \
+    component/freertos/mem \
 	platforms/board \
 	platforms/cmsis/device \
 	platforms/driver/src \
 	platforms/syscall \
 	utils
 C_SOURCES := $(foreach dir,$(C_DIRS),$(wildcard $(dir)/*.c))
-C_SOURCES += 
+C_SOURCES +=
 
 # ASM sources
 ASM_SOURCES :=  \
@@ -121,8 +121,8 @@ C_INCLUDES :=  \
 	component/ringbuffer \
     component/freertos/inc \
     component/freertos/src \
-    component/freertos/mem \
     component/freertos/port \
+    component/freertos/mem \
 	platforms/board \
 	platforms/cmsis/inc \
 	platforms/cmsis/device \
