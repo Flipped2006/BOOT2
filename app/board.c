@@ -9,6 +9,8 @@
 #include "stm32f4xx_ll_rcc.h"
 #include "stm32f4xx_hal_cortex.h"
 
+#include "FreeRTOS.h"
+#include "task.h"
 #include "console.h"
 #include "bl_usart.h"
 #include "time_delay.h"
@@ -114,3 +116,25 @@ int fputc(int c, FILE *fp)
     while (LL_USART_IsActiveFlag_TXE(USART1) == 0);
     return c;
 }
+
+void vAssertCalled(const char *file, int line)
+{
+    __disable_irq();
+    printf("vAssertCalled: %s, line %d\n", file, line);
+    while (1);
+}
+
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    __disable_irq();
+    printf("vApplicationStackOverflowHook: %s\n", pcTaskName);
+    while (1);
+}
+
+void vApplicationMallocFailedHook(void)
+{
+    __disable_irq();
+    printf("vApplicationMallocFailedHook\n");
+    while (1);
+}
+
