@@ -41,6 +41,10 @@ C_DIRS := \
 	component/crc \
 	component/easylogger \
 	component/ringbuffer \
+    component/freertos/inc \
+    component/freertos/src \
+    component/freertos/port \
+    component/freertos/mem \
 	platforms/board \
 	platforms/cmsis/device \
 	platforms/driver/src \
@@ -115,6 +119,10 @@ C_INCLUDES :=  \
 	component/crc \
 	component/easylogger \
 	component/ringbuffer \
+    component/freertos/inc \
+    component/freertos/src \
+    component/freertos/port \
+    component/freertos/mem \
 	platforms/board \
 	platforms/cmsis/inc \
 	platforms/cmsis/device \
