@@ -3,11 +3,13 @@
 
 #include <stdint.h>
 
-typedef void (*bl_usart_rx_callback_t)(uint8_t* data, uint16_t len);
+typedef void (*bl_usart_rx_callback_t)(uint8_t* data, uint16_t size);
+typedef void (*bl_usart_rx_async_callback_t)(void);
 
 void bl_usart_init(void);
-void bl_usart_write(uint8_t* data, uint16_t len);
+void bl_usart_write(uint8_t* data, uint16_t size);
 void bl_usart_rx_callback_register(bl_usart_rx_callback_t callback);
-
+void bl_usart_rx_async_callback_register(bl_usart_rx_async_callback_t callback);
+void bl_usart_start_rx_aync(uint8_t* data, uint16_t size);
 
 #endif /* __BL_USART_H__ */

@@ -34,17 +34,17 @@ extern uint32_t SystemCoreClock;
 #define configHEAP_CLEAR_MEMORY_ON_FREE                              1
 
 /* Memory allocation related definitions. */
-#define configSUPPORT_STATIC_ALLOCATION                              1
+#define configSUPPORT_STATIC_ALLOCATION                              0
 #define configSUPPORT_DYNAMIC_ALLOCATION                             1
-#define configTOTAL_HEAP_SIZE                                        (64 * 1024) /* the unit is a byte */
-#define configAPPLICATION_ALLOCATED_HEAP                             1
+#define configTOTAL_HEAP_SIZE                                        (90 * 1024) /* the unit is a byte */
+#define configAPPLICATION_ALLOCATED_HEAP                             0
 #define configSTACK_ALLOCATION_FROM_SEPARATE_HEAP                    1
 
 /* Hook function related definitions. */
 #define configUSE_IDLE_HOOK                                          0
 #define configUSE_TICK_HOOK                                          0
-#define configCHECK_FOR_STACK_OVERFLOW                               0
-#define configUSE_MALLOC_FAILED_HOOK                                 0
+#define configCHECK_FOR_STACK_OVERFLOW                               2
+#define configUSE_MALLOC_FAILED_HOOK                                 1
 #define configUSE_DAEMON_TASK_STARTUP_HOOK                           0
 #define configUSE_SB_COMPLETED_CALLBACK                              0
 
@@ -93,7 +93,7 @@ void vAssertCalled(const char *file, int line);
 #define INCLUDE_vTaskDelay                                           1
 #define INCLUDE_xTaskGetSchedulerState                               1
 #define INCLUDE_xTaskGetCurrentTaskHandle                            1
-#define INCLUDE_uxTaskGetStackHighWaterMark                          0
+#define INCLUDE_uxTaskGetStackHighWaterMark                          1
 #define INCLUDE_uxTaskGetStackHighWaterMark2                         0
 #define INCLUDE_xTaskGetIdleTaskHandle                               0
 #define INCLUDE_eTaskGetState                                        0

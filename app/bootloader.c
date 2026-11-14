@@ -7,6 +7,11 @@
 #include "stm32f4xx_ll_tim.h"
 #include "stm32f4xx_ll_usart.h"
 
+#include "FreeRTOS.h"
+#include "task.h"
+#include "queue.h"
+
+#include "bootloader.h"
 #include "board.h"
 #include "bl_usart.h"
 #include "ringbuffer.h"
@@ -20,96 +25,38 @@
 #include "utils.h"
 
 #define LOG_TAG    "bootloader"
-#define LOG_LVL    ELOG_LVL_INFO
+#define LOG_LVL    ELOG_LVL_DEBUG
 #include "elog.h"
 
-#define APP_ADDRESS 0x08010000
-#define APP_SIZE 0x70000
+#define QUEUE_PACKET_MAX_POOL 10
 
-#define PACKET_HEADER_REQUEST               0xAA
-#define PACKET_HEADER_RESPONSE              0x55
+static QueueHandle_t empty_queue, parse_queue, program_queue;
+static queue_packet_t *current_packet;
 
-#define PACKET_HEADER_SIZE                  1
-#define PACKET_OPCODE_SIZE                  1
-#define PACKET_LENGTH_SIZE                  2
-#define PACKET_CRC_SIZE                     2
-#define PACKET_HEADER_OFFSET                0
-#define PACKET_OPCODE_OFFSET                (PACKET_HEADER_OFFSET + PACKET_HEADER_SIZE)
-#define PACKET_LENGTH_OFFSET                (PACKET_OPCODE_OFFSET + PACKET_OPCODE_SIZE)
-#define PACKET_PAYLOAD_OFFSET               (PACKET_LENGTH_OFFSET + PACKET_LENGTH_SIZE)
-#define PACKET_MIN_SIZE                     (PACKET_HEADER_SIZE + PACKET_OPCODE_SIZE + PACKET_LENGTH_SIZE + PACKET_CRC_SIZE)
-
-#define ADDR_PARAM_LENGTH                   4
-#define SIZE_PARAM_LENGTH                   4
-#define ADDR_SIZE_PARAM_LENGTH              8
-#define ADDR_SIZE_CRC_PARAM_LENGTH          12
-#define PROGRAM_PARAM_HEADER_SIZE           8
-
-#define BL_TRAP_BOOT_TIME                   3000
-#define BL_FLASH_BASE_ADDR                  0x08000000
-#define BL_FLASH_SIZE                       (48 * 1024)
-#define BL_VERSION                          "0.0.1"
-#define BL_PAYLOAD_BUFFER_SIZE              (4096 + ADDR_SIZE_PARAM_LENGTH)
-#define BL_RX_PACKET_BUFFER_SIZE            (PACKET_PAYLOAD_OFFSET + BL_PAYLOAD_BUFFER_SIZE + PACKET_CRC_SIZE)
-#define BL_RINGBUFFER_SIZE                  (5 * 1024)
-#define BL_BYTE_RESET_TIME_MS               20
-
-// TX packet format:
-// HEADER OPCODE LEN DATA CRC16
-// state exchange parse:
-// HEADER->OPCODE->LEN->PAYLOADZ->CRC16
-typedef enum
+static void packet_reset(queue_packet_t *packet)
 {
-    PACKET_STATE_HEADER = 0,
-    PACKET_STATE_OPCODE,
-    PACKET_STATE_LEN,
-    PACKET_STATE_PAYLOAD,
-    PACKET_STATE_CRC16,
-} packet_state_machine_t;
+    packet->header = 0;
+    packet->opcode = PACKET_OPCODE_NONE;
+    packet->len = 0;
+    packet->crc = 0;
+    memset(packet->_temp, 0, sizeof(packet->_temp));
+    packet->_recv = 0;
+    packet->_state = PACKET_STATE_HEADER;
+}
 
-// INQUERY OPCODE
-// VERSION MTU
-typedef enum
+static void packet_release(queue_packet_t *packet)
 {
-    SUBCODE_INQUERY_VERSION,
-    SUBCODE_INQUERY_MTU,
-} subcode_inquery_t;
+    memset(packet, 0, sizeof(*packet));
+    packet_reset(packet);
+    BaseType_t result = xQueueSend(empty_queue, &packet, portMAX_DELAY);
+    configASSERT(result == pdPASS);
+}
 
-// OPCODE
-typedef enum
-{
-    PACKET_OPCODE_NONE = 0,
-    PACKET_OPCODE_RESET = 0x21,
-    PACKET_OPCODE_BOOT = 0x22,
-    PACKET_OPCODE_INQUERY = 0x01,
-    PACKET_OPCODE_ERASE = 0x81,
-    PACKET_OPCODE_PROGRAM = 0x82,
-    PACKET_OPCODE_VERIFY = 0x83,
-    PACKET_OPCODE_READ = 0x80,
-} packet_opcode_t;
 
-// RX packet format:
-// HEADER OPCODE ERRCODE LEN DATA CRC32
-// ERRCODE
-typedef enum
-{
-    PACKET_ERRCODE_OK = 0,
-    PACKET_ERRCODE_OPCODE,
-    PACKET_ERRCODE_OVERFLOW,
-    PACKET_ERRCODE_TIMEOUT,
-    PACKET_ERRCODE_FORMANT,
-    PACKET_ERRCODE_VERIFY,
-    PACKET_ERRCODE_PARAM,
-    PACKET_ERRCODE_UNKNOW = 0xff,
-} packet_errcode_t;
-
-static uint8_t rb_buffer[BL_RINGBUFFER_SIZE];
-static rb_t rb;
-
-static packet_state_machine_t packet_buffer_state = PACKET_STATE_HEADER;
-static uint8_t packet_buffer[BL_RX_PACKET_BUFFER_SIZE];
-static uint16_t packet_buffer_index = 0;
-static uint16_t packet_payload_len = 0;
+// static packet_state_machine_t packet_buffer_state = PACKET_STATE_HEADER;
+// static uint8_t packet_buffer[BL_RX_PACKET_BUFFER_SIZE];
+// static uint16_t packet_buffer_index = 0;
+// static uint16_t packet_payload_len = 0;
 
 static bool application_valid_check(void)
 {
@@ -140,164 +87,74 @@ static bool magic_header_trap_app_check(void)
     return true;
 }
 
-static bool bl_rx_packet_parse(uint8_t *data, uint16_t size)
+static bool bl_opcode_valid(uint8_t opcode)
 {
-    while (size--)
+    switch (opcode)
     {
-        static uint64_t now, last_time;
-        now = time_get_ms();
-        if (now - last_time > BL_BYTE_RESET_TIME_MS)
-        {
-            if (packet_buffer_state != PACKET_STATE_HEADER)
-                log_e("rx timeout, state reset");
-            packet_buffer_index = 0;
-            packet_buffer_state = PACKET_STATE_HEADER;
-        }
-        last_time = now;
-
-        log_v("recv %02X", *data);
-        packet_buffer[packet_buffer_index++] = *data++;
-        switch (packet_buffer_state)
-        {
-        case PACKET_STATE_HEADER:
-            if (packet_buffer[PACKET_HEADER_OFFSET] == PACKET_HEADER_REQUEST)
-            {
-                log_d("header ok:%02X", packet_buffer[PACKET_HEADER_OFFSET]);
-                packet_buffer_state = PACKET_STATE_OPCODE;
-            }
-            else
-            {
-                packet_buffer_index = 0;
-                packet_buffer_state = PACKET_STATE_HEADER;
-            }
-            break;
-
-        case PACKET_STATE_OPCODE:
-            if (
-                packet_buffer[PACKET_OPCODE_OFFSET] == PACKET_OPCODE_NONE ||
-                packet_buffer[PACKET_OPCODE_OFFSET] == PACKET_OPCODE_INQUERY ||
-                packet_buffer[PACKET_OPCODE_OFFSET] == PACKET_OPCODE_RESET ||
-                packet_buffer[PACKET_OPCODE_OFFSET] == PACKET_OPCODE_BOOT ||
-                packet_buffer[PACKET_OPCODE_OFFSET] == PACKET_OPCODE_ERASE ||
-                packet_buffer[PACKET_OPCODE_OFFSET] == PACKET_OPCODE_PROGRAM ||
-                packet_buffer[PACKET_OPCODE_OFFSET] == PACKET_OPCODE_VERIFY ||
-                packet_buffer[PACKET_OPCODE_OFFSET] == PACKET_OPCODE_READ)
-            {
-                log_d("opcode ok:%02X", packet_buffer[PACKET_OPCODE_OFFSET]);
-                packet_buffer_state = PACKET_STATE_LEN;
-            }
-            else
-            {
-                packet_buffer_index = 0;
-                packet_buffer_state = PACKET_STATE_HEADER;
-            }
-            break;
-
-        case PACKET_STATE_LEN:
-            if (packet_buffer_index == PACKET_PAYLOAD_OFFSET)
-            {
-                packet_payload_len = get_u16(packet_buffer + PACKET_LENGTH_OFFSET);
-                if (packet_payload_len + 4 <= BL_RX_PACKET_BUFFER_SIZE)
-                {
-                    log_d("len ok: %d", packet_payload_len);
-                    if (packet_payload_len > 0)
-                        packet_buffer_state = PACKET_STATE_PAYLOAD;
-                    else
-                        packet_buffer_state = PACKET_STATE_CRC16;
-                }
-                else
-                {
-                    packet_buffer_index = 0;
-                    packet_buffer_state = PACKET_STATE_HEADER;
-                }
-            }
-            break;
-
-        case PACKET_STATE_PAYLOAD:
-            if (packet_buffer_index == PACKET_PAYLOAD_OFFSET + packet_payload_len)
-            {
-                log_d("payload ok");
-                packet_buffer_state = PACKET_STATE_CRC16;
-            }
-            break;
-
-        case PACKET_STATE_CRC16:
-            if (packet_buffer_index == PACKET_PAYLOAD_OFFSET + packet_payload_len + PACKET_CRC_SIZE)
-            {
-                led_off(led3);
-                uint16_t crc = get_u16(packet_buffer + PACKET_PAYLOAD_OFFSET + packet_payload_len);
-                uint16_t ccrc = crc16(packet_buffer, packet_payload_len + PACKET_PAYLOAD_OFFSET);
-                if (crc == ccrc)
-                {
-                    log_d("crc ok");
-                    log_d("expect: %02X, recv: %02X", crc, ccrc);
-                    log_d("receive packet, opcode: %02X len: %d", packet_buffer[PACKET_OPCODE_OFFSET], packet_payload_len);
-                    if (ELOG_LVL_VERBOSE <= LOG_LVL)
-                    {
-                        elog_hexdump("PACKET", 16, packet_buffer, PACKET_MIN_SIZE + packet_payload_len);
-                    }
-                }
-                else
-                {
-                    log_e("crc error");
-                    log_e("expect: %02X, recv: %02X", crc, ccrc);
-                }
-                packet_buffer_index = 0;
-                packet_buffer_state = PACKET_STATE_HEADER;
-                led_on(led3);
-                return true;
-            }
-            break;
-
-        default:
-            break;
-        }
+    case PACKET_OPCODE_NONE:
+    case PACKET_OPCODE_INQUERY:
+    case PACKET_OPCODE_RESET:
+    case PACKET_OPCODE_BOOT:
+    case PACKET_OPCODE_ERASE:
+    case PACKET_OPCODE_PROGRAM:
+    case PACKET_OPCODE_VERIFY:
+    case PACKET_OPCODE_READ:
+        return true;
+    default:
+        return false;
     }
-    return false;
 }
 
-static void bl_tx_packet_response(uint8_t opecode, uint8_t errcode, uint16_t len, const uint8_t *data)
+static void bl_usart_tx_response(uint8_t opcode, uint8_t errcode, uint16_t len, const uint8_t *data)
 {
-    uint8_t *response = packet_buffer, *prsp = packet_buffer;
+    uint8_t response[128], *prsp = response;
     put_u8_inc(&prsp, PACKET_HEADER_RESPONSE);
-    put_u8_inc(&prsp, opecode);
+    put_u8_inc(&prsp, opcode);
     put_u8_inc(&prsp, errcode);
     put_u16_inc(&prsp, len);
-    put_bytes_inc(&prsp, data, len);
+    if (len > 0)
+        put_bytes_inc(&prsp, data, len);
     uint16_t crc = crc16(response, prsp - response);
     put_u16_inc(&prsp, crc);
 
-    bl_usart_write(packet_buffer, prsp - response);
+    bl_usart_write(response, prsp - response);
 }
 
-static void bl_opcode_inquery_handler(void)
+static void bl_opcode_inquery_handler(queue_packet_t* packet)
 {
     log_i("inquery start...");
-    if (packet_payload_len != 1)
+    if (packet->len != 1)
         return;
 
-    subcode_inquery_t subcode = (subcode_inquery_t)packet_buffer[PACKET_PAYLOAD_OFFSET];
+    subcode_inquery_t subcode = (subcode_inquery_t)packet->raw[PACKET_PAYLOAD_OFFSET];
     uint8_t mtu[2];
+
+    if (subcode != SUBCODE_INQUERY_VERSION && subcode != SUBCODE_INQUERY_MTU)
+    {
+        log_e("inquery subcode error, subcode=%d", subcode);
+        bl_usart_tx_response(PACKET_OPCODE_INQUERY, PACKET_ERRCODE_PARAM, 0, NULL);
+        return;
+    }
 
     switch (subcode)
     {
     case SUBCODE_INQUERY_VERSION:
-        bl_tx_packet_response(PACKET_OPCODE_INQUERY, PACKET_ERRCODE_OK, sizeof(BL_VERSION), (const uint8_t *)BL_VERSION);
+        bl_usart_tx_response(PACKET_OPCODE_INQUERY, PACKET_ERRCODE_OK, sizeof(BL_VERSION), (const uint8_t *)BL_VERSION);
         break;
     case SUBCODE_INQUERY_MTU:
         mtu[0] = BL_PAYLOAD_BUFFER_SIZE & 0xff;
         mtu[1] = (BL_PAYLOAD_BUFFER_SIZE >> 8) & 0xff;
-        bl_tx_packet_response(PACKET_OPCODE_INQUERY, PACKET_ERRCODE_OK, sizeof(mtu), (const uint8_t *)mtu);
+        bl_usart_tx_response(PACKET_OPCODE_INQUERY, PACKET_ERRCODE_OK, sizeof(mtu), (const uint8_t *)mtu);
         break;
     default:
         break;
     }
 }
 
-static void bl_opcode_reset_handler(void)
+static void bl_opcode_reset_handler(queue_packet_t* packet)
 {
     log_i("reset handler");
-    bl_tx_packet_response(PACKET_OPCODE_RESET, PACKET_ERRCODE_OK, 0, NULL);
+    bl_usart_tx_response(PACKET_OPCODE_RESET, PACKET_ERRCODE_OK, 0, NULL);
     log_w("system reseting...");
 
     NVIC_SystemReset();
@@ -321,53 +178,59 @@ static void app_application(void)
     NVIC_DisableIRQ(USART3_IRQn);
     NVIC_DisableIRQ(TIM6_DAC_IRQn);
 
-    SCB->VTOR = APP_ADDRESS;
+    SysTick->CTRL = 0;
+    SCB->ICSR |= SCB_ICSR_PENDSTCLR_Msk | SCB_ICSR_PENDSVCLR_Msk;
+    NVIC_ClearPendingIRQ(SysTick_IRQn);
+    NVIC_ClearPendingIRQ(PendSV_IRQn);
 
+    SCB->VTOR = APP_ADDRESS;
+    __DSB();
+    __ISB();
     extern void JumptoApp(uint32_t appAddress);
     JumptoApp(APP_ADDRESS);
 }
 
-static void bl_opcode_boot_handler(void)
+static void bl_opcode_boot_handler(queue_packet_t* packet)
 {
     log_i("boot handler");
-    bl_tx_packet_response(PACKET_OPCODE_BOOT, PACKET_ERRCODE_OK, 0, NULL);
+    bl_usart_tx_response(PACKET_OPCODE_BOOT, PACKET_ERRCODE_OK, 0, NULL);
     log_w("system boot...");
 
     app_application();
 }
 
-static void bl_opcode_erase_handler(void)
+static void bl_opcode_erase_handler(queue_packet_t* packet)
 {
     log_i("erase handler...");
 
-    if (packet_payload_len != 8)
+    if (packet->len != 8)
     {
-        log_e("erase packet len error, len=%d", packet_payload_len);
-        bl_tx_packet_response(PACKET_OPCODE_ERASE, PACKET_ERRCODE_PARAM, 0, NULL);
+        log_e("erase packet len error, len=%d", packet->len);
+        bl_usart_tx_response(PACKET_OPCODE_ERASE, PACKET_ERRCODE_PARAM, 0, NULL);
         return;
     }
 
-    uint32_t addr = get_u32(packet_buffer + PACKET_PAYLOAD_OFFSET);
-    uint32_t size = get_u32(packet_buffer + PACKET_PAYLOAD_OFFSET + ADDR_PARAM_LENGTH);
+    uint32_t addr = get_u32(packet->raw + PACKET_PAYLOAD_OFFSET);
+    uint32_t size = get_u32(packet->raw + PACKET_PAYLOAD_OFFSET + ADDR_PARAM_LENGTH);
 
     if (addr < STM32_FLASH_BASE_ADDR || addr + size > STM32_FLASH_BASE_ADDR + STM32_FLASH_SIZE)
     {
         log_e("erase address out of range, addr=0x%08X, size=0x%08X", addr, size);
-        bl_tx_packet_response(PACKET_OPCODE_ERASE, PACKET_ERRCODE_PARAM, 0, NULL);
+        bl_usart_tx_response(PACKET_OPCODE_ERASE, PACKET_ERRCODE_PARAM, 0, NULL);
         return;
     }
 
     if (addr < BL_FLASH_BASE_ADDR + BL_FLASH_SIZE && addr + size > BL_FLASH_BASE_ADDR)
     {
         log_e("erase address has been locked, addr=0x%08X, size=0x%08X", addr, size);
-        bl_tx_packet_response(PACKET_OPCODE_ERASE, PACKET_ERRCODE_PARAM, 0, NULL);
+        bl_usart_tx_response(PACKET_OPCODE_ERASE, PACKET_ERRCODE_PARAM, 0, NULL);
         return;
     }
 
     if (size == 0)
     {
         log_e("erase size is 0");
-        bl_tx_packet_response(PACKET_OPCODE_ERASE, PACKET_ERRCODE_PARAM, 0, NULL);
+        bl_usart_tx_response(PACKET_OPCODE_ERASE, PACKET_ERRCODE_PARAM, 0, NULL);
         return;
     }
 
@@ -376,42 +239,42 @@ static void bl_opcode_erase_handler(void)
     stm32_flash_unlock();
     stm32_flash_erase(addr, size);
     stm32_flash_lock();
-    bl_tx_packet_response(PACKET_OPCODE_ERASE, PACKET_ERRCODE_OK, 0, NULL);
+    bl_usart_tx_response(PACKET_OPCODE_ERASE, PACKET_ERRCODE_OK, 0, NULL);
 }
 
-static void bl_opcode_program_handler(void)
+static void bl_opcode_program_handler(queue_packet_t* packet)
 {
     log_i("program handler...");
 
-    if (packet_payload_len <= 8)
+    if (packet->len <= 8)
     {
-        log_e("program packet len error, len=%d", packet_payload_len);
-        bl_tx_packet_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_PARAM, 0, NULL);
+        log_e("program packet len error, len=%d", packet->len);
+        bl_usart_tx_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_PARAM, 0, NULL);
         return;
     }
 
-    uint32_t addr = get_u32(packet_buffer + PACKET_PAYLOAD_OFFSET);
-    uint32_t size = get_u32(packet_buffer + PACKET_PAYLOAD_OFFSET + ADDR_PARAM_LENGTH);
-    uint8_t *data = (uint8_t *)(packet_buffer + PACKET_PAYLOAD_OFFSET + ADDR_SIZE_PARAM_LENGTH);
+    uint32_t addr = get_u32(packet->raw + PACKET_PAYLOAD_OFFSET);
+    uint32_t size = get_u32(packet->raw + PACKET_PAYLOAD_OFFSET + ADDR_PARAM_LENGTH);
+    uint8_t *data = (uint8_t *)(packet->raw + PACKET_PAYLOAD_OFFSET + ADDR_SIZE_PARAM_LENGTH);
 
     if (addr < STM32_FLASH_BASE_ADDR || addr + size > STM32_FLASH_BASE_ADDR + STM32_FLASH_SIZE)
     {
         log_e("program address out of range, addr=0x%08X, size=0x%08X", addr, size);
-        bl_tx_packet_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_PARAM, 0, NULL);
+        bl_usart_tx_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_PARAM, 0, NULL);
         return;
     }
 
     if (addr < BL_FLASH_BASE_ADDR + BL_FLASH_SIZE && addr + size > BL_FLASH_BASE_ADDR)
     {
         log_e("program address has been locked, addr=0x%08X, size=0x%08X", addr, size);
-        bl_tx_packet_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_PARAM, 0, NULL);
+        bl_usart_tx_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_PARAM, 0, NULL);
         return;
     }
 
     if (size == 0)
     {
-        log_e("program size is 0");
-        bl_tx_packet_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_PARAM, 0, NULL);
+        log_e("program size does not match payload, size=%lu, len=%u", size, packet->len);
+        bl_usart_tx_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_PARAM, 0, NULL);
         return;
     }
 
@@ -423,42 +286,42 @@ static void bl_opcode_program_handler(void)
     stm32_flash_lock();
     led_off(led2);
 
-    bl_tx_packet_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_OK, 0, NULL);
+    bl_usart_tx_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_OK, 0, NULL);
 }
 
-static void bl_opcode_verify_handler(void)
+static void bl_opcode_verify_handler(queue_packet_t* packet)
 {
     log_i("verify handler...");
 
-    if (packet_payload_len != 12)
+    if (packet->len != 12)
     {
-        log_e("verify packet len error, len=%d", packet_payload_len);
-        bl_tx_packet_response(PACKET_OPCODE_VERIFY, PACKET_ERRCODE_PARAM, 0, NULL);
+        log_e("verify packet len error, len=%d", packet->len);
+        bl_usart_tx_response(PACKET_OPCODE_VERIFY, PACKET_ERRCODE_PARAM, 0, NULL);
         return;
     }
 
-    uint32_t addr = get_u32(packet_buffer + PACKET_PAYLOAD_OFFSET);
-    uint32_t size = get_u32(packet_buffer + PACKET_PAYLOAD_OFFSET + ADDR_PARAM_LENGTH);
-    uint32_t crc = get_u32(packet_buffer + PACKET_PAYLOAD_OFFSET + ADDR_SIZE_PARAM_LENGTH);
+    uint32_t addr = get_u32(packet->raw + PACKET_PAYLOAD_OFFSET);
+    uint32_t size = get_u32(packet->raw + PACKET_PAYLOAD_OFFSET + ADDR_PARAM_LENGTH);
+    uint32_t crc = get_u32(packet->raw + PACKET_PAYLOAD_OFFSET + ADDR_SIZE_PARAM_LENGTH);
 
     if (addr < STM32_FLASH_BASE_ADDR || addr + size > STM32_FLASH_BASE_ADDR + STM32_FLASH_SIZE)
     {
         log_e("verify address out of range, addr=0x%08X, size=0x%08X", addr, size);
-        bl_tx_packet_response(PACKET_OPCODE_VERIFY, PACKET_ERRCODE_PARAM, 0, NULL);
+        bl_usart_tx_response(PACKET_OPCODE_VERIFY, PACKET_ERRCODE_PARAM, 0, NULL);
         return;
     }
 
     if (addr < BL_FLASH_BASE_ADDR + BL_FLASH_SIZE && addr + size > BL_FLASH_BASE_ADDR)
     {
         log_e("verify address has been locked, addr=0x%08X, size=0x%08X", addr, size);
-        bl_tx_packet_response(PACKET_OPCODE_VERIFY, PACKET_ERRCODE_PARAM, 0, NULL);
+        bl_usart_tx_response(PACKET_OPCODE_VERIFY, PACKET_ERRCODE_PARAM, 0, NULL);
         return;
     }
 
     if (size == 0)
     {
         log_e("verify size is 0");
-        bl_tx_packet_response(PACKET_OPCODE_VERIFY, PACKET_ERRCODE_PARAM, 0, NULL);
+        bl_usart_tx_response(PACKET_OPCODE_VERIFY, PACKET_ERRCODE_PARAM, 0, NULL);
         return;
     }
 
@@ -468,45 +331,190 @@ static void bl_opcode_verify_handler(void)
     if (ccrc != crc)
     {
         log_e("verify crc error, expect=0x%08X, recv=0x%08X", ccrc, crc);
-        bl_tx_packet_response(PACKET_OPCODE_VERIFY, PACKET_ERRCODE_VERIFY, 0, NULL);
+        bl_usart_tx_response(PACKET_OPCODE_VERIFY, PACKET_ERRCODE_VERIFY, 0, NULL);
         return;
     }
 
     log_i("verify crc ok, expect=0x%08X, recv=0x%08X", ccrc, crc);
 
-    bl_tx_packet_response(PACKET_OPCODE_VERIFY, PACKET_ERRCODE_OK, 0, NULL);
+    bl_usart_tx_response(PACKET_OPCODE_VERIFY, PACKET_ERRCODE_OK, 0, NULL);
 }
 
-static void bl_opcode_dispatch(void)
+static void bl_usart_rx_handler(uint8_t *data, uint16_t size)
 {
-    switch (packet_buffer[PACKET_OPCODE_OFFSET])
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+    while (size--)
+    {
+        uint8_t byte = *data++;
+
+        queue_packet_t* packet = current_packet;
+
+        switch (packet->_state)
+        {
+        case PACKET_STATE_HEADER:
+            if (byte == PACKET_HEADER_REQUEST)
+            {
+                packet->header = PACKET_HEADER_REQUEST;
+                packet->_recv = 0;
+                packet->_state = PACKET_STATE_OPCODE;
+            }
+            else
+            {
+                packet->_recv = 0;
+                packet->_state = PACKET_STATE_HEADER;
+            }
+            break;
+
+        case PACKET_STATE_OPCODE:
+            packet->opcode = byte;
+            packet->_recv = 0;
+            packet->_state = PACKET_STATE_LEN;
+            break;
+
+        case PACKET_STATE_LEN:
+            packet->_temp[packet->_recv++] = byte;
+            if (packet->_recv == PACKET_LENGTH_SIZE)
+            {
+                packet->_recv = 0;
+                packet->len = get_u16(packet->_temp);
+                if (packet->len > BL_PAYLOAD_BUFFER_SIZE)
+                {
+                    packet->_state = PACKET_STATE_HEADER;
+                }
+                else if (packet->len == 0)
+                {
+                    packet->_state = PACKET_STATE_CRC16;
+                }
+                else
+                {
+                    packet->_state = PACKET_STATE_PAYLOAD;
+                    if (packet->opcode == PACKET_OPCODE_PROGRAM)
+                    {
+                        bl_usart_start_rx_aync(packet->payload, packet->len);
+                    }
+                }
+            }
+            break;
+
+        case PACKET_STATE_PAYLOAD:
+            packet->payload[packet->_recv++] = byte;
+            if (packet->_recv == packet->len)
+            {
+                packet->_recv = 0;
+                packet->_state = PACKET_STATE_CRC16;
+            }
+            break;
+
+        case PACKET_STATE_CRC16:
+            packet->_temp[packet->_recv++] = byte;
+            if (packet->_recv == PACKET_CRC_SIZE)
+            {
+                led_on(led3);
+                packet->_recv = 0;
+                packet->_state = PACKET_STATE_HEADER;
+                packet->crc = get_u16(packet->_temp);
+                uint16_t ccrc = crc16(packet->raw, packet->len + PACKET_PAYLOAD_OFFSET);
+                led_off(led3);
+                if (packet->crc == ccrc)
+                {
+                    xQueueSendFromISR(parse_queue, &packet, &xHigherPriorityTaskWoken);
+                    xQueueReceiveFromISR(empty_queue, &current_packet, &xHigherPriorityTaskWoken);
+                    configASSERT(current_packet != NULL);
+                    packet_reset(current_packet);
+                }
+                else
+                {
+                    packet->_recv = 0;
+                    packet->_state = PACKET_STATE_HEADER;
+                }
+            }
+            break;
+
+        default:
+            packet->_recv = 0;
+            packet->_state = PACKET_STATE_HEADER;
+            break;
+        }
+    }
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+static void bl_usart_rx_async_handler(void)
+{
+    if (current_packet != NULL && current_packet->_state == PACKET_STATE_PAYLOAD)
+        current_packet->_state = PACKET_STATE_CRC16;
+}
+
+static void bl_opcode_dispatch(queue_packet_t* packet)
+{
+    switch (packet->opcode)
     {
     case PACKET_OPCODE_INQUERY:
-        bl_opcode_inquery_handler();
+        bl_opcode_inquery_handler(packet);
         break;
     case PACKET_OPCODE_RESET:
-        bl_opcode_reset_handler();
+        bl_opcode_reset_handler(packet);
         break;
     case PACKET_OPCODE_BOOT:
-        bl_opcode_boot_handler();
+        bl_opcode_boot_handler(packet);
         break;
     case PACKET_OPCODE_ERASE:
-        bl_opcode_erase_handler();
-        break;
-    case PACKET_OPCODE_PROGRAM:
-        bl_opcode_program_handler();
+        bl_opcode_erase_handler(packet);
         break;
     case PACKET_OPCODE_VERIFY:
-        bl_opcode_verify_handler();
+        bl_opcode_verify_handler(packet);
         break;
     default:
         break;
     }
 }
 
-static void bl_usart_rx_handler(uint8_t *data, uint16_t size)
+void parser_task(void *param)
 {
-    rb_writes(rb, data, size);
+    (void)param;
+    while (1)
+    {
+        queue_packet_t* packet;
+        xQueueReceive(parse_queue, &packet, portMAX_DELAY);
+        configASSERT(packet != NULL);
+
+        log_d("receive packet, opcode: %02X len: %d", packet->opcode, packet->len);
+
+        if (!bl_opcode_valid(packet->opcode))
+        {
+            log_e("invalid opcode: %02X", packet->opcode);
+            bl_usart_tx_response(packet->opcode, PACKET_ERRCODE_PARAM, 0, NULL);
+            packet_release(packet);
+            continue;
+        }
+
+        if (packet->opcode == PACKET_OPCODE_PROGRAM)
+        {
+            BaseType_t result = xQueueSend(program_queue, &packet, portMAX_DELAY);
+            configASSERT(result == pdPASS);
+            continue;
+        }
+
+        bl_opcode_dispatch(packet);
+
+        packet_release(packet);
+    }
+}
+
+void program_task(void *param)
+{
+    (void)param;
+    while (1)
+    {
+        queue_packet_t *packet;
+        xQueueReceive(program_queue, &packet, portMAX_DELAY);
+        configASSERT(packet);
+
+        bl_opcode_program_handler(packet);
+
+        packet_release(packet);
+    }
 }
 
 static bool key_trap_boot_check(void)
@@ -521,20 +529,6 @@ static bool key_trap_boot_check(void)
         }
     }
     return true;
-}
-
-static bool rb_revc_trap_boot_check(void)
-{
-    for (int i = 0; i < BL_TRAP_BOOT_TIME; i+=10)
-    {
-        time_delay_ms(10);
-        if (!rb_is_empty(rb))
-        {
-            log_w("rx data received, enter boot mode");
-            return true;
-        }
-    }
-    return false;
 }
 
 static void key_wait_release(void)
@@ -558,13 +552,39 @@ void bootloader_main(void)
 {
     log_i("Bootloader start...");
 
-    bl_usart_init();
+    empty_queue = xQueueCreate(QUEUE_PACKET_MAX_POOL, sizeof(queue_packet_t*));
+    configASSERT(empty_queue);
+    parse_queue = xQueueCreate(QUEUE_PACKET_MAX_POOL, sizeof(queue_packet_t*));
+    configASSERT(parse_queue);
+    program_queue = xQueueCreate(QUEUE_PACKET_MAX_POOL, sizeof(queue_packet_t*));
+    configASSERT(program_queue);
+
+    for (uint8_t i = 0; i < QUEUE_PACKET_MAX_POOL; ++i)
+    {
+        queue_packet_t* packet = pvPortMalloc(sizeof(queue_packet_t));
+        configASSERT(packet);
+        memset(packet, 0, sizeof(*packet));
+        BaseType_t result = xQueueSend(empty_queue, &packet, 0);
+        configASSERT(result == pdPASS);
+    }
+
+    BaseType_t result = xQueueReceive(empty_queue, &current_packet, portMAX_DELAY);
+    configASSERT(result == pdPASS);
+
+
     bl_usart_rx_callback_register(bl_usart_rx_handler);
-    rb = rb_init(rb_buffer, sizeof(rb_buffer));
+    bl_usart_rx_async_callback_register(bl_usart_rx_async_handler);
+    bl_usart_init();
+
+    result = xTaskCreate(parser_task, "parser_task", 2048, NULL, 1, NULL);
+    configASSERT(result == pdPASS);
+    result = xTaskCreate(program_task, "program_task", 2048, NULL, 2, NULL);
+    configASSERT(result == pdPASS);
 
     key_init(key2);
 
-    bool trap_app = !key_trap_boot_check() && magic_header_trap_app_check() && !rb_revc_trap_boot_check();
+    // bool trap_app = !key_trap_boot_check() && magic_header_trap_app_check() && !rb_revc_trap_boot_check();
+    bool trap_app = false;
     if (trap_app)
     {
         log_w("trap app ok, enter app mode");
@@ -587,15 +607,9 @@ void bootloader_main(void)
         if (key_press_check())
         {
             log_w("key2 pressed, system reseting...");
-            time_delay_ms(2);
+            vTaskDelay(pdMS_TO_TICKS(2));
             NVIC_SystemReset();
         }
-
-        uint8_t data;
-        if (rb_read(rb, &data))
-        {
-            if (bl_rx_packet_parse(&data, 1))
-                bl_opcode_dispatch();
-        }
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

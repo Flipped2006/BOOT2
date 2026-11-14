@@ -16,6 +16,6 @@ extern led_desc_t led2;
 extern led_desc_t led3;
 
 void board_lowlevel_init(void);
-void board_init(void);
+void board_module_init(void);
 
 #endif /* __BOARD_H__ */

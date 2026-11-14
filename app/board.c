@@ -106,7 +106,7 @@ void board_lowlevel_init(void)
     LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_TIM6);
 }
 
-void board_init(void)
+void board_module_init(void)
 {
     console_init();
     time_init();

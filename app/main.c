@@ -4,17 +4,21 @@
 #include <stdio.h>
 
 #include "stm32f4xx.h"
+
 #include "elog.h"
+#include "FreeRTOS.h"
+#include "task.h"
+
 
 extern void board_lowlevel_init(void);
-extern void board_init(void);
+extern void board_module_init(void);
 extern void bootloader_main(void);
 
 
-int main(void)
+void main_init(void *arg)
 {
-    board_lowlevel_init();
-    board_init();
+    (void)arg;
+    board_module_init();
 
 #ifdef ELOG_OUTPUT_ENABLE
     elog_init();
@@ -28,4 +32,17 @@ int main(void)
 #endif
 
     bootloader_main();
+
+    vTaskDelete(NULL);
+}
+
+int main(void)
+{
+    board_lowlevel_init();
+
+    BaseType_t result = xTaskCreate(main_init, "main_init", 2048, NULL, configMAX_PRIORITIES - 1, NULL);
+    configASSERT(result == pdPASS);
+    vTaskStartScheduler();
+
+    while (1);
 }

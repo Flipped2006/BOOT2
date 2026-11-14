@@ -3,9 +3,15 @@
 #include "stm32f4xx_ll_gpio.h"
 #include "stm32f4xx_ll_usart.h"
 
+#include "FreeRTOS.h"
+#include "semphr.h"
 #include "bl_usart.h"
 
-static bl_usart_rx_callback_t bl_usart_rx_callback = 0;
+static bl_usart_rx_callback_t bl_usart_rx_callback;
+static bl_usart_rx_async_callback_t bl_usart_rx_async_callback;
+SemaphoreHandle_t bl_usart_tx_semaphore;
+
+uint32_t baudrate = 2 * 1000 * 1000;
 
 // update console
 // USART3_TX: PB10
@@ -38,6 +44,8 @@ static void bl_usart_lowlevel_init(void)
     LL_USART_Init(USART3, &USART_InitStructure);
 
     LL_USART_Enable(USART3);
+    LL_USART_EnableDMAReq_TX(USART3);
+    LL_USART_DisableDMAReq_RX(USART3);
 }
 
 static void bl_usart_it_init(void)
@@ -46,82 +54,97 @@ static void bl_usart_it_init(void)
     LL_DMA_ClearFlag_TC3(DMA1);
     LL_DMA_ClearFlag_TC1(DMA1);
 
-    NVIC_EnableIRQ(USART3_IRQn);
     NVIC_SetPriority(USART3_IRQn, 5);
+    NVIC_EnableIRQ(USART3_IRQn);
 
-//    DMA_ITConfig(DMA1_Stream1 | DMA1_Stream3, DMA_IT_TC, ENABLE);
+    NVIC_SetPriority(DMA1_Stream3_IRQn, 5);
+    NVIC_EnableIRQ(DMA1_Stream3_IRQn);
+
+    NVIC_SetPriority(DMA1_Stream1_IRQn, 5);
+    NVIC_EnableIRQ(DMA1_Stream1_IRQn);
+
     LL_USART_EnableIT_RXNE(USART3);
+    LL_DMA_EnableIT_TC(DMA1, LL_DMA_STREAM_3);
+    LL_DMA_EnableIT_TC(DMA1, LL_DMA_STREAM_1);
 }
 
-// void bl_usart_dma_init(void)
-// {
-    // // TX DMA1_Stream3_Channel4
-    // DMA_InitTypeDef DMA_InitStructure;
-    // DMA_StructInit(&DMA_InitStructure);
-    // DMA_InitStructure.DMA_Channel = DMA_Channel_4;
-    // DMA_InitStructure.DMA_PeripheralBaseAddr = (uint32_t)&(USART3->DR);
-    // DMA_InitStructure.DMA_DIR = DMA_DIR_MemoryToPeripheral;
-    // DMA_InitStructure.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
-    // DMA_InitStructure.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
-    // DMA_InitStructure.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
-    // DMA_InitStructure.DMA_Mode = DMA_Mode_Normal;
-    // DMA_InitStructure.DMA_Priority = DMA_Priority_Low;
-    // DMA_InitStructure.DMA_FIFOMode = DMA_FIFOMode_Disable;
-    // DMA_InitStructure.DMA_FIFOThreshold = DMA_FIFOThreshold_HalfFull;
-    // DMA_InitStructure.DMA_MemoryBurst = DMA_MemoryBurst_Single;
-    // DMA_InitStructure.DMA_PeripheralBurst = DMA_PeripheralBurst_Single;
-    // DMA_InitStructure.DMA_Memory0BaseAddr = (uint32_t)0;
-    // DMA_InitStructure.DMA_MemoryInc = DMA_MemoryInc_Enable;
-    // DMA_InitStructure.DMA_BufferSize = 0;
-    // DMA_Init(DMA1_Stream3, &DMA_InitStructure);
-    // DMA_ITConfig(DMA1_Stream3, DMA_IT_TC, ENABLE);
+void bl_dma_init(void)
+{
+    LL_DMA_InitTypeDef DMA_InitStruct = {0};
 
-//     // RX DMA1_Stream1_Channel4
-//     DMA_StructInit(&DMA_InitStructure);
-//     DMA_InitStructure.DMA_Channel = DMA_Channel_4;
-//     DMA_InitStructure.DMA_PeripheralBaseAddr = (uint32_t)&(USART3->DR);
-//     DMA_InitStructure.DMA_DIR = DMA_DIR_PeripheralToMemory;
-//     DMA_InitStructure.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
-//     DMA_InitStructure.DMA_MemoryInc = DMA_MemoryInc_Disable;
-//     DMA_InitStructure.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
-//     DMA_InitStructure.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
-//     DMA_InitStructure.DMA_Mode = DMA_Mode_Normal;
-//     DMA_InitStructure.DMA_Priority = DMA_Priority_Low;
-//     DMA_InitStructure.DMA_FIFOMode = DMA_FIFOMode_Disable;
-//     DMA_InitStructure.DMA_FIFOThreshold = DMA_FIFOThreshold_HalfFull;
-//     DMA_InitStructure.DMA_MemoryBurst = DMA_MemoryBurst_Single;
-//     DMA_InitStructure.DMA_PeripheralBurst = DMA_PeripheralBurst_Single;
-//     DMA_InitStructure.DMA_Memory0BaseAddr = (uint32_t)0;
-//     DMA_InitStructure.DMA_BufferSize = 0;
-//     DMA_Init(DMA1_Stream1, &DMA_InitStructure);
-//     USART_DMACmd(USART3, USART_DMAReq_Tx | USART_DMAReq_Rx, ENABLE);
-// }
+    // TX
+    LL_DMA_StructInit(&DMA_InitStruct);
+    DMA_InitStruct.PeriphOrM2MSrcAddress  = (uint32_t)&(USART3->DR);
+    DMA_InitStruct.MemoryOrM2MDstAddress  = 0;
+    DMA_InitStruct.Direction              = LL_DMA_DIRECTION_MEMORY_TO_PERIPH;
+    DMA_InitStruct.Mode                   = LL_DMA_MODE_NORMAL;
+    DMA_InitStruct.PeriphOrM2MSrcIncMode  = LL_DMA_PERIPH_NOINCREMENT;
+    DMA_InitStruct.MemoryOrM2MDstIncMode  = LL_DMA_MEMORY_INCREMENT;
+    DMA_InitStruct.PeriphOrM2MSrcDataSize = LL_DMA_PDATAALIGN_BYTE;
+    DMA_InitStruct.MemoryOrM2MDstDataSize = LL_DMA_MDATAALIGN_BYTE;
+    DMA_InitStruct.NbData                 = 0;
+    DMA_InitStruct.Channel                = LL_DMA_CHANNEL_4;
+    DMA_InitStruct.Priority               = LL_DMA_PRIORITY_MEDIUM;
+    DMA_InitStruct.FIFOMode               = LL_DMA_FIFOMODE_DISABLE;
+    DMA_InitStruct.FIFOThreshold          = LL_DMA_FIFOTHRESHOLD_1_2;
+    DMA_InitStruct.MemBurst               = LL_DMA_MBURST_SINGLE;
+    DMA_InitStruct.PeriphBurst            = LL_DMA_PBURST_SINGLE;
+
+    LL_DMA_Init(DMA1, LL_DMA_STREAM_3, &DMA_InitStruct);
+    LL_DMA_DisableStream(DMA1, LL_DMA_STREAM_3);
+
+    // RX
+    DMA_InitStruct.Direction              = LL_DMA_DIRECTION_PERIPH_TO_MEMORY;
+
+    LL_DMA_Init(DMA1, LL_DMA_STREAM_1, &DMA_InitStruct);
+    LL_DMA_DisableStream(DMA1, LL_DMA_STREAM_1);
+}
 
 void bl_usart_init(void)
 {
+    bl_usart_tx_semaphore = xSemaphoreCreateBinary();
+    configASSERT(bl_usart_tx_semaphore != NULL);
+
     bl_usart_io_init();
     bl_usart_lowlevel_init();
+    bl_dma_init();
     bl_usart_it_init();
 }
 
-void bl_usart_write(uint8_t* data, uint16_t len)
+void bl_usart_write(uint8_t* data, uint16_t size)
 {
-    while (len--)
+    uint32_t len = size;
+    do
     {
-        LL_USART_TransmitData8(USART3, *data++);
-        while (LL_USART_IsActiveFlag_TC(USART3) == 0);
-    }
+        uint32_t chunk_size = len > 65535 ? 65535 : len;
+        LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_3, (uint32_t)data);
+        LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_3, chunk_size);
+        LL_DMA_EnableStream(DMA1, LL_DMA_STREAM_3);
+        xSemaphoreTake(bl_usart_tx_semaphore, pdMS_TO_TICKS(chunk_size * 1000 * 3 / (baudrate / 10)));
 
-    // uint32_t write_chunk = len < 65535 ? len : 65535;m
-    // do
-    // {
-    //     DMA1_Stream3->NDTR = write_chunk;
-    //     DMA1_Stream3->M0AR = (uint32_t)data;
-    //     DMA_Cmd(DMA1_Stream3, ENABLE);
-    //     while (DMA_GetFlagStatus(DMA1_Stream3, DMA_FLAG_TCIF3) == RESET);
-    //     data += write_chunk;
-    //     len -= write_chunk;
-    // } while (len > 0);
+        data += chunk_size;
+        len -= chunk_size;
+    } while (len > 0);
+    while (!LL_USART_IsActiveFlag_TC(USART3));
+    LL_USART_ClearFlag_TC(USART3);
+}
+
+// version1: disable RXNE -> disable DMA -> clear all DMA flags -> enable DMA
+void bl_usart_start_rx_aync(uint8_t* data, uint16_t size)
+{
+    configASSERT(data != NULL && size > 0);
+    LL_USART_DisableIT_RXNE(USART3);
+    LL_USART_DisableDMAReq_RX(USART3);
+    while (LL_DMA_IsEnabledStream(DMA1, LL_DMA_STREAM_1));
+    LL_DMA_ClearFlag_TC1(DMA1);
+    LL_DMA_ClearFlag_HT1(DMA1);
+    LL_DMA_ClearFlag_TE1(DMA1);
+    LL_DMA_ClearFlag_DME1(DMA1);
+    LL_DMA_ClearFlag_FE1(DMA1);
+    LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_1, (uint32_t)data);
+    LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_1, size);
+    LL_DMA_EnableStream(DMA1, LL_DMA_STREAM_1);
+    LL_USART_EnableDMAReq_RX(USART3);
 }
 
 void bl_usart_rx_callback_register(bl_usart_rx_callback_t callback)
@@ -129,13 +152,44 @@ void bl_usart_rx_callback_register(bl_usart_rx_callback_t callback)
     bl_usart_rx_callback = callback;
 }
 
+void bl_usart_rx_async_callback_register(bl_usart_rx_async_callback_t callback)
+{
+    bl_usart_rx_async_callback = callback;
+}
+
 void USART3_IRQHandler(void)
 {
-    if (LL_USART_IsActiveFlag_RXNE(USART3) != 0)
+    if (LL_USART_IsEnabledIT_RXNE(USART3) && LL_USART_IsActiveFlag_RXNE(USART3))
     {
-        LL_USART_ClearFlag_RXNE(USART3);
         uint8_t data = LL_USART_ReceiveData8(USART3);
         if (bl_usart_rx_callback)
             bl_usart_rx_callback(&data, 1);
+    }
+}
+
+// TX DMA + Semaphore against resource competition
+void DMA1_Stream3_IRQHandler(void)
+{
+    if (LL_DMA_IsActiveFlag_TC3(DMA1))
+    {
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        xSemaphoreGiveFromISR(bl_usart_tx_semaphore, &xHigherPriorityTaskWoken);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+
+        LL_DMA_ClearFlag_TC3(DMA1);
+        LL_DMA_DisableStream(DMA1, LL_DMA_STREAM_3);
+    }
+}
+
+// RX DMA for huge data
+void DMA1_Stream1_IRQHandler(void)
+{
+    if (LL_DMA_IsActiveFlag_TC1(DMA1))
+    {
+        LL_DMA_ClearFlag_TC1(DMA1);
+        LL_DMA_DisableStream(DMA1, LL_DMA_STREAM_1);
+        LL_USART_EnableIT_RXNE(USART3);
+        if (bl_usart_rx_async_callback)
+            bl_usart_rx_async_callback();
     }
 }
