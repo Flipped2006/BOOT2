@@ -46,14 +46,6 @@ typedef enum
     PACKET_STATE_CRC16,
 } packet_state_machine_t;
 
-// INQUERY OPCODE
-// VERSION MTU
-typedef enum
-{
-    SUBCODE_INQUERY_VERSION,
-    SUBCODE_INQUERY_MTU,
-} subcode_inquery_t;
-
 // OPCODE
 typedef enum
 {
@@ -61,11 +53,27 @@ typedef enum
     PACKET_OPCODE_RESET = 0x21,
     PACKET_OPCODE_BOOT = 0x22,
     PACKET_OPCODE_INQUERY = 0x01,
+    PACKET_OPCODE_REQUEST = 0x02,
     PACKET_OPCODE_ERASE = 0x81,
     PACKET_OPCODE_PROGRAM = 0x82,
     PACKET_OPCODE_VERIFY = 0x83,
     PACKET_OPCODE_READ = 0x80,
 } packet_opcode_t;
+
+// INQUERY SUBCODE
+// VERSION MTU
+typedef enum
+{
+    SUBCODE_INQUERY_VERSION,
+    SUBCODE_INQUERY_MTU,
+} subcode_inquery_t;
+
+// REQUEST SUBCODE
+// FWINFO
+typedef enum
+{
+    SUBCODE_REQUEST_FWINFO
+} subcode_request_t;
 
 // RX packet format:
 // HEADER OPCODE ERRCODE LEN DATA CRC32

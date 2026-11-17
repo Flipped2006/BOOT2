@@ -33,6 +33,8 @@
 static QueueHandle_t empty_queue, parse_queue, program_queue;
 static queue_packet_t *current_packet;
 
+static uint32_t fireware_size, received_size, programed_size;
+
 static void packet_reset(queue_packet_t *packet)
 {
     packet->header = 0;
@@ -93,6 +95,7 @@ static bool bl_opcode_valid(uint8_t opcode)
     {
     case PACKET_OPCODE_NONE:
     case PACKET_OPCODE_INQUERY:
+    case PACKET_OPCODE_REQUEST:
     case PACKET_OPCODE_RESET:
     case PACKET_OPCODE_BOOT:
     case PACKET_OPCODE_ERASE:
@@ -145,6 +148,41 @@ static void bl_opcode_inquery_handler(queue_packet_t* packet)
         mtu[0] = BL_PAYLOAD_BUFFER_SIZE & 0xff;
         mtu[1] = (BL_PAYLOAD_BUFFER_SIZE >> 8) & 0xff;
         bl_usart_tx_response(PACKET_OPCODE_INQUERY, PACKET_ERRCODE_OK, sizeof(mtu), (const uint8_t *)mtu);
+        break;
+    default:
+        break;
+    }
+}
+
+static void bl_opcode_request_handler(queue_packet_t* packet)
+{
+    log_i("request start...");
+
+    if (packet->len != 1 + sizeof(uint32_t))
+    {
+        log_e("request packet len error, len=%d", packet->len);
+        bl_usart_tx_response(PACKET_OPCODE_REQUEST, PACKET_ERRCODE_PARAM, 0, NULL);
+        return;
+    }
+
+    subcode_request_t subcode = (subcode_request_t)packet->raw[PACKET_PAYLOAD_OFFSET];
+
+    if (subcode != SUBCODE_REQUEST_FWINFO)
+    {
+        log_e("request subcode error, subcode=%d", subcode);
+        bl_usart_tx_response(PACKET_OPCODE_REQUEST, PACKET_ERRCODE_PARAM, 0, NULL);
+        return;
+    }
+
+    switch (subcode)
+    {
+    case SUBCODE_REQUEST_FWINFO:
+        uint8_t *payload = packet->payload + 1;
+        fireware_size = get_u32(payload);
+        log_i("request fireware size is set: %ld", fireware_size);
+        received_size = 0;
+        programed_size = 0;
+        bl_usart_tx_response(PACKET_OPCODE_REQUEST, PACKET_ERRCODE_OK, 0, NULL);
         break;
     default:
         break;
@@ -452,6 +490,9 @@ static void bl_opcode_dispatch(queue_packet_t* packet)
     {
     case PACKET_OPCODE_INQUERY:
         bl_opcode_inquery_handler(packet);
+        break;
+    case PACKET_OPCODE_REQUEST:
+        bl_opcode_request_handler(packet);
         break;
     case PACKET_OPCODE_RESET:
         bl_opcode_reset_handler(packet);
