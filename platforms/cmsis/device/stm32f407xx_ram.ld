@@ -63,13 +63,12 @@ _Min_Stack_Size = 0x400; /* required amount of stack */
 MEMORY
 {
 RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 128K
-CCMRAM (xrw)      : ORIGIN = 0x10000000, LENGTH = 64K
 }
 
 /* Define output sections */
 SECTIONS
 {
-  /* The startup code goes first into FLASH */
+  /* The startup code goes first into RAM */
   .isr_vector :
   {
     . = ALIGN(4);
@@ -77,7 +76,7 @@ SECTIONS
     . = ALIGN(4);
   } >RAM
 
-  /* The program code and other data goes into FLASH */
+  /* The program code and other data goes into RAM */
   .text :
   {
     . = ALIGN(4);
@@ -94,7 +93,7 @@ SECTIONS
     _etext = .;        /* define a global symbols at end of code */
   } >RAM
 
-  /* Constant data goes into FLASH */
+  /* Constant data goes into RAM */
   .rodata :
   {
     . = ALIGN(4);

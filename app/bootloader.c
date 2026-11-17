@@ -625,9 +625,9 @@ void bootloader_main(void)
     bl_usart_rx_async_callback_register(bl_usart_rx_async_handler);
     bl_usart_init();
 
-    result = xTaskCreate(parser_task, "parser_task", 2048, NULL, 1, NULL);
+    result = xTaskCreate(parser_task, "parser_task", 2048, NULL, 2, NULL);
     configASSERT(result == pdPASS);
-    result = xTaskCreate(program_task, "program_task", 2048, NULL, 2, NULL);
+    result = xTaskCreate(program_task, "program_task", 2048, NULL, 1, NULL);
     configASSERT(result == pdPASS);
 
     key_init(key2);

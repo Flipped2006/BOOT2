@@ -66,9 +66,12 @@ ASMM_SOURCES :=
 #######################################
 # binaries
 #######################################
-PREFIX := /home/wang/BOOT2/tools/gcc-arm-none-eabi/15.3/bin/arm-none-eabi-
+PREFIX := arm-none-eabi-
 # The gcc compiler bin path can be either defined in make command via GCC_PATH variable (> make GCC_PATH:=xxx)
 # either it can be added to the PATH environment variable.
+ifneq ($(wildcard tools/gcc-arm-none-eabi/15.3/bin/$(PREFIX)gcc),)
+GCC_PATH ?= tools/gcc-arm-none-eabi/15.3/bin
+endif
 ifdef GCC_PATH
 CC := $(GCC_PATH)/$(PREFIX)gcc
 AS := $(GCC_PATH)/$(PREFIX)gcc -x assembler-with-cpp
@@ -110,7 +113,7 @@ C_DEFS :=  \
 
 
 # AS includes
-AS_INCLUDS :=
+AS_INCLUDES :=
 
 # C includes
 C_INCLUDES :=  \
@@ -140,6 +143,7 @@ CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction
 
 ifeq ($(DEBUG), 1)
 CFLAGS += -g -gdwarf-2
+ASFLAGS += -g -gdwarf-2
 endif
 
 
@@ -151,7 +155,12 @@ CFLAGS += -MMD -MP -MF"$(@:%.o=%.d)"
 # LDFLAGS
 #######################################
 # link script
-LDSCRIPT := platforms/cmsis/device/stm32f407xx_flash.ld
+LDSCRIPT := platforms/cmsis/device/stm32f407xx_ram.ld
+
+# First stage embeds the RAM-linked second stage in the reserved Flash area.
+BOOT1ST := $(BUILD_DIR)/boot1st
+BOOT1ST_LDSCRIPT := boot1st/boot1st.ld
+BOOT1ST_LDFLAGS := $(MCU) -nostdlib -nostartfiles -T$(BOOT1ST_LDSCRIPT) -Wl,-Map=$(BOOT1ST).map,--cref -Wl,--gc-sections
 
 # libraries
 LIBS := -lc -lm -lnosys
@@ -159,7 +168,10 @@ LIBDIR :=
 LDFLAGS := $(MCU) -specs=nano.specs -T$(LDSCRIPT) $(LIBDIR) $(LIBS) -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections
 
 # default action: build all
-all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin
+all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin boot1st
+
+.PHONY: all boot1st clean
+boot1st: $(BOOT1ST).elf $(BOOT1ST).hex $(BOOT1ST).bin
 
 
 #######################################
@@ -182,8 +194,16 @@ $(BUILD_DIR)/%.o: %.s Makefile | $(BUILD_DIR)
 $(BUILD_DIR)/%.o: %.S Makefile | $(BUILD_DIR)
 	$(AS) -c $(CFLAGS) $< -o $@
 
-$(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile
+$(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile $(LDSCRIPT)
 	$(CC) $(OBJECTS) $(LDFLAGS) -o $@
+	$(SZ) $@
+
+# Compile the payload only after boot.bin is up to date (.s uses the C preprocessor).
+$(BOOT1ST).o: boot1st/boot1st.s $(BUILD_DIR)/$(TARGET).bin Makefile | $(BUILD_DIR)
+	$(AS) -c $(ASFLAGS) -DBOOT2_IMAGE_PATH='"$(BUILD_DIR)/$(TARGET).bin"' $< -o $@
+
+$(BOOT1ST).elf: $(BOOT1ST).o $(BOOT1ST_LDSCRIPT) Makefile
+	$(CC) $(BOOT1ST).o $(BOOT1ST_LDFLAGS) -o $@
 	$(SZ) $@
 
 $(BUILD_DIR)/%.hex: $(BUILD_DIR)/%.elf | $(BUILD_DIR)
@@ -193,7 +213,7 @@ $(BUILD_DIR)/%.bin: $(BUILD_DIR)/%.elf | $(BUILD_DIR)
 	$(BIN) $< $@
 
 $(BUILD_DIR):
-	mkdir $@
+	mkdir -p $@
 
 #######################################
 # clean up
