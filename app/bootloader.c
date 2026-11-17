@@ -34,6 +34,8 @@ static QueueHandle_t empty_queue, parse_queue, program_queue;
 static queue_packet_t *current_packet;
 
 static uint32_t fireware_size, received_size, programed_size;
+static uint32_t header_size, header_received_size, header_programed_size;
+static subcode_request_t program_info = SUBCODE_REQUEST_FWINFO;
 
 static void packet_reset(queue_packet_t *packet)
 {
@@ -147,26 +149,33 @@ static void bl_opcode_request_handler(queue_packet_t* packet)
 
     subcode_request_t subcode = (subcode_request_t)packet->raw[PACKET_PAYLOAD_OFFSET];
 
-    if (subcode != SUBCODE_REQUEST_FWINFO)
+    if (subcode != SUBCODE_REQUEST_FWINFO && subcode != SUBCODE_REQUEST_MHINFO)
     {
         log_e("request subcode error, subcode=%d", subcode);
         bl_usart_tx_response(PACKET_OPCODE_REQUEST, PACKET_ERRCODE_PARAM, 0, NULL);
         return;
     }
 
+    uint8_t *payload = packet->payload + 1;
     switch (subcode)
     {
     case SUBCODE_REQUEST_FWINFO:
-        uint8_t *payload = packet->payload + 1;
         fireware_size = get_u32(payload);
         log_i("request fireware size is set: %ld", fireware_size);
         received_size = 0;
         programed_size = 0;
-        bl_usart_tx_response(PACKET_OPCODE_REQUEST, PACKET_ERRCODE_OK, 0, NULL);
+        break;
+    case SUBCODE_REQUEST_MHINFO:
+        header_size = get_u32(payload);
+        log_i("request magic header size is set: %ld", header_size);
+        header_received_size = 0;
+        header_programed_size = 0;
         break;
     default:
         break;
     }
+    program_info = subcode;
+    bl_usart_tx_response(PACKET_OPCODE_REQUEST, PACKET_ERRCODE_OK, 0, NULL);
 }
 
 static void bl_opcode_reset_handler(queue_packet_t* packet)
@@ -298,11 +307,15 @@ static bool bl_opcode_program_handler(queue_packet_t* packet)
 
     log_i("program address: 0x%08X, size: 0x%08X", addr, size);
 
+    uint32_t *received = program_info == SUBCODE_REQUEST_MHINFO ? &header_received_size : &received_size;
+    uint32_t expected_size = program_info == SUBCODE_REQUEST_MHINFO ? header_size : fireware_size;
+    *received += size;
+    bool more_data = *received < expected_size;
+
     BaseType_t result = xQueueSend(program_queue, &packet, portMAX_DELAY);
     configASSERT(result == pdPASS);
 
-    received_size += size;
-    if (received_size < fireware_size)
+    if (more_data)
         bl_usart_tx_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_OK, 0, NULL);
     return true;
 }
@@ -531,8 +544,10 @@ static void run_program(queue_packet_t *packet)
     stm32_flash_lock();
     led_off(led2);
 
-    programed_size += size;
-    if (programed_size == fireware_size)
+    uint32_t *programed = program_info == SUBCODE_REQUEST_MHINFO ? &header_programed_size : &programed_size;
+    uint32_t expected_size = program_info == SUBCODE_REQUEST_MHINFO ? header_size : fireware_size;
+    *programed += size;
+    if (*programed == expected_size)
         bl_usart_tx_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_OK, 0, NULL);
 }
 
@@ -547,7 +562,7 @@ void program_task(void *param)
 
         run_program(packet);
 
-        packet_release(packet);
+        xQueueSend(empty_queue, &packet, portMAX_DELAY);
     }
 }
 

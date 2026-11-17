@@ -69,10 +69,11 @@ typedef enum
 } subcode_inquery_t;
 
 // REQUEST SUBCODE
-// FWINFO
+// FWINFO MHINFO
 typedef enum
 {
-    SUBCODE_REQUEST_FWINFO
+    SUBCODE_REQUEST_FWINFO = 0x00,
+    SUBCODE_REQUEST_MHINFO = 0x01,
 } subcode_request_t;
 
 // RX packet format:
