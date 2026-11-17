@@ -37,28 +37,8 @@ static uint32_t fireware_size, received_size, programed_size;
 
 static void packet_reset(queue_packet_t *packet)
 {
-    packet->header = 0;
-    packet->opcode = PACKET_OPCODE_NONE;
-    packet->len = 0;
-    packet->crc = 0;
-    memset(packet->_temp, 0, sizeof(packet->_temp));
-    packet->_recv = 0;
-    packet->_state = PACKET_STATE_HEADER;
-}
-
-static void packet_release(queue_packet_t *packet)
-{
     memset(packet, 0, sizeof(*packet));
-    packet_reset(packet);
-    BaseType_t result = xQueueSend(empty_queue, &packet, portMAX_DELAY);
-    configASSERT(result == pdPASS);
 }
-
-
-// static packet_state_machine_t packet_buffer_state = PACKET_STATE_HEADER;
-// static uint8_t packet_buffer[BL_RX_PACKET_BUFFER_SIZE];
-// static uint16_t packet_buffer_index = 0;
-// static uint16_t packet_payload_len = 0;
 
 static bool application_valid_check(void)
 {
@@ -280,51 +260,51 @@ static void bl_opcode_erase_handler(queue_packet_t* packet)
     bl_usart_tx_response(PACKET_OPCODE_ERASE, PACKET_ERRCODE_OK, 0, NULL);
 }
 
-static void bl_opcode_program_handler(queue_packet_t* packet)
+static bool bl_opcode_program_handler(queue_packet_t* packet)
 {
     log_i("program handler...");
 
-    if (packet->len <= 8)
+    if (packet->len <= ADDR_SIZE_PARAM_LENGTH)
     {
         log_e("program packet len error, len=%d", packet->len);
         bl_usart_tx_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_PARAM, 0, NULL);
-        return;
+        return false;
     }
 
     uint32_t addr = get_u32(packet->raw + PACKET_PAYLOAD_OFFSET);
     uint32_t size = get_u32(packet->raw + PACKET_PAYLOAD_OFFSET + ADDR_PARAM_LENGTH);
-    uint8_t *data = (uint8_t *)(packet->raw + PACKET_PAYLOAD_OFFSET + ADDR_SIZE_PARAM_LENGTH);
 
-    if (addr < STM32_FLASH_BASE_ADDR || addr + size > STM32_FLASH_BASE_ADDR + STM32_FLASH_SIZE)
+    if (addr < STM32_FLASH_BASE_ADDR || addr >= STM32_FLASH_BASE_ADDR + STM32_FLASH_SIZE ||
+        size > STM32_FLASH_BASE_ADDR + STM32_FLASH_SIZE - addr)
     {
         log_e("program address out of range, addr=0x%08X, size=0x%08X", addr, size);
         bl_usart_tx_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_PARAM, 0, NULL);
-        return;
+        return false;
     }
 
     if (addr < BL_FLASH_BASE_ADDR + BL_FLASH_SIZE && addr + size > BL_FLASH_BASE_ADDR)
     {
         log_e("program address has been locked, addr=0x%08X, size=0x%08X", addr, size);
         bl_usart_tx_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_PARAM, 0, NULL);
-        return;
+        return false;
     }
 
-    if (size == 0)
+    if (size == 0 || size != packet->len - ADDR_SIZE_PARAM_LENGTH)
     {
         log_e("program size does not match payload, size=%lu, len=%u", size, packet->len);
         bl_usart_tx_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_PARAM, 0, NULL);
-        return;
+        return false;
     }
 
     log_i("program address: 0x%08X, size: 0x%08X", addr, size);
 
-    led_on(led2);
-    stm32_flash_unlock();
-    stm32_flash_program(addr, data, size);
-    stm32_flash_lock();
-    led_off(led2);
+    BaseType_t result = xQueueSend(program_queue, &packet, portMAX_DELAY);
+    configASSERT(result == pdPASS);
 
-    bl_usart_tx_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_OK, 0, NULL);
+    received_size += size;
+    if (received_size < fireware_size)
+        bl_usart_tx_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_OK, 0, NULL);
+    return true;
 }
 
 static void bl_opcode_verify_handler(queue_packet_t* packet)
@@ -484,7 +464,7 @@ static void bl_usart_rx_async_handler(void)
         current_packet->_state = PACKET_STATE_CRC16;
 }
 
-static void bl_opcode_dispatch(queue_packet_t* packet)
+static bool bl_opcode_dispatch(queue_packet_t* packet)
 {
     switch (packet->opcode)
     {
@@ -503,12 +483,15 @@ static void bl_opcode_dispatch(queue_packet_t* packet)
     case PACKET_OPCODE_ERASE:
         bl_opcode_erase_handler(packet);
         break;
+    case PACKET_OPCODE_PROGRAM:
+        return bl_opcode_program_handler(packet);
     case PACKET_OPCODE_VERIFY:
         bl_opcode_verify_handler(packet);
         break;
     default:
         break;
     }
+    return false;
 }
 
 void parser_task(void *param)
@@ -526,21 +509,31 @@ void parser_task(void *param)
         {
             log_e("invalid opcode: %02X", packet->opcode);
             bl_usart_tx_response(packet->opcode, PACKET_ERRCODE_PARAM, 0, NULL);
-            packet_release(packet);
+            packet_reset(packet);
+            xQueueSend(empty_queue, &packet, portMAX_DELAY);
             continue;
         }
 
-        if (packet->opcode == PACKET_OPCODE_PROGRAM)
-        {
-            BaseType_t result = xQueueSend(program_queue, &packet, portMAX_DELAY);
-            configASSERT(result == pdPASS);
-            continue;
-        }
-
-        bl_opcode_dispatch(packet);
-
-        packet_release(packet);
+        if (!bl_opcode_dispatch(packet))
+            xQueueSend(empty_queue, &packet, portMAX_DELAY);
     }
+}
+
+static void run_program(queue_packet_t *packet)
+{
+    uint32_t addr = get_u32(packet->raw + PACKET_PAYLOAD_OFFSET);
+    uint32_t size = get_u32(packet->raw + PACKET_PAYLOAD_OFFSET + ADDR_PARAM_LENGTH);
+    uint8_t *data = (uint8_t *)(packet->raw + PACKET_PAYLOAD_OFFSET + ADDR_SIZE_PARAM_LENGTH);
+
+    led_on(led2);
+    stm32_flash_unlock();
+    stm32_flash_program(addr, data, size);
+    stm32_flash_lock();
+    led_off(led2);
+
+    programed_size += size;
+    if (programed_size == fireware_size)
+        bl_usart_tx_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_OK, 0, NULL);
 }
 
 void program_task(void *param)
@@ -552,7 +545,7 @@ void program_task(void *param)
         xQueueReceive(program_queue, &packet, portMAX_DELAY);
         configASSERT(packet);
 
-        bl_opcode_program_handler(packet);
+        run_program(packet);
 
         packet_release(packet);
     }
