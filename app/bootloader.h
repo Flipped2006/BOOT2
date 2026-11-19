@@ -31,7 +31,7 @@
 #define BL_PAYLOAD_BUFFER_SIZE              (4096 + ADDR_SIZE_PARAM_LENGTH)
 #define BL_RX_PACKET_BUFFER_SIZE            (PACKET_PAYLOAD_OFFSET + BL_PAYLOAD_BUFFER_SIZE + PACKET_CRC_SIZE)
 #define BL_RINGBUFFER_SIZE                  (5 * 1024)
-#define BL_BYTE_RESET_TIME_MS               20
+#define BL_BYTE_RESET_TIME_MS               60
 
 // TX packet format:
 // HEADER OPCODE LEN DATA CRC16

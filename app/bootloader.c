@@ -32,6 +32,7 @@
 
 static QueueHandle_t empty_queue, parse_queue, program_queue;
 static queue_packet_t *current_packet;
+static TickType_t rx_last_tick;
 
 static uint32_t fireware_size, received_size, programed_size;
 static uint32_t header_size, header_received_size, header_programed_size;
@@ -371,15 +372,31 @@ static void bl_opcode_verify_handler(queue_packet_t* packet)
     bl_usart_tx_response(PACKET_OPCODE_VERIFY, PACKET_ERRCODE_OK, 0, NULL);
 }
 
+static void bl_rx_timeout_check(void)
+{
+    if (current_packet == NULL || current_packet->_state == PACKET_STATE_HEADER)
+        return;
+
+    TickType_t now = xTaskGetTickCountFromISR();
+    if ((TickType_t)(now - rx_last_tick) >= pdMS_TO_TICKS(BL_BYTE_RESET_TIME_MS))
+    {
+        bl_usart_abort_rx();
+        packet_reset(current_packet);
+        log_d("rx timeout");
+    }
+}
+
 static void bl_usart_rx_handler(uint8_t *data, uint16_t size)
 {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    bl_rx_timeout_check();
 
     while (size--)
     {
         uint8_t byte = *data++;
 
         queue_packet_t* packet = current_packet;
+        rx_last_tick = xTaskGetTickCountFromISR();
 
         switch (packet->_state)
         {
@@ -474,7 +491,11 @@ static void bl_usart_rx_handler(uint8_t *data, uint16_t size)
 static void bl_usart_rx_async_handler(void)
 {
     if (current_packet != NULL && current_packet->_state == PACKET_STATE_PAYLOAD)
+    {
+        current_packet->_recv = 0;
         current_packet->_state = PACKET_STATE_CRC16;
+        rx_last_tick = xTaskGetTickCountFromISR();
+    }
 }
 
 static bool bl_opcode_dispatch(queue_packet_t* packet)
@@ -637,6 +658,7 @@ void bootloader_main(void)
     bl_usart_rx_callback_register(bl_usart_rx_handler);
     bl_usart_rx_async_callback_register(bl_usart_rx_async_handler);
     bl_usart_init();
+    time_delay_func_register(bl_rx_timeout_check);
 
     result = xTaskCreate(parser_task, "parser_task", 2048, NULL, 2, NULL);
     configASSERT(result == pdPASS);

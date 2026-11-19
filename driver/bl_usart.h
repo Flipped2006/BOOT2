@@ -14,5 +14,6 @@ void bl_usart_write(uint8_t* data, uint16_t size);
 void bl_usart_rx_callback_register(bl_usart_rx_callback_t callback);
 void bl_usart_rx_async_callback_register(bl_usart_rx_async_callback_t callback);
 void bl_usart_start_rx_aync(uint8_t* data, uint16_t size);
+void bl_usart_abort_rx(void);
 
 #endif /* __BL_USART_H__ */

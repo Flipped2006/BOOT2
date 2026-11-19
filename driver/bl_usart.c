@@ -136,18 +136,31 @@ void bl_usart_write(uint8_t* data, uint16_t size)
     LL_USART_ClearFlag_TC(USART3);
 }
 
-// version1: disable RXNE -> disable DMA -> clear all DMA flags -> enable DMA
-void bl_usart_start_rx_aync(uint8_t* data, uint16_t size)
+static void bl_usart_stop_rx_aync(void)
 {
-    configASSERT(data != NULL && size > 0);
     LL_USART_DisableIT_RXNE(USART3);
-    LL_USART_DisableDMAReq_RX(USART3);
+    LL_DMA_DisableStream(DMA1, LL_DMA_STREAM_1);
     while (LL_DMA_IsEnabledStream(DMA1, LL_DMA_STREAM_1));
+    LL_USART_DisableDMAReq_RX(USART3);
     LL_DMA_ClearFlag_TC1(DMA1);
     LL_DMA_ClearFlag_HT1(DMA1);
     LL_DMA_ClearFlag_TE1(DMA1);
     LL_DMA_ClearFlag_DME1(DMA1);
     LL_DMA_ClearFlag_FE1(DMA1);
+}
+
+void bl_usart_abort_rx(void)
+{
+    bl_usart_stop_rx_aync();
+    NVIC_ClearPendingIRQ(DMA1_Stream1_IRQn);
+    LL_USART_ClearFlag_ORE(USART3);
+    LL_USART_EnableIT_RXNE(USART3);
+}
+
+void bl_usart_start_rx_aync(uint8_t* data, uint16_t size)
+{
+    configASSERT(data != NULL && size > 0);
+    bl_usart_stop_rx_aync();
     LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_1, (uint32_t)data);
     LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_1, size);
     LL_DMA_EnableStream(DMA1, LL_DMA_STREAM_1);
@@ -195,8 +208,7 @@ void DMA1_Stream1_IRQHandler(void)
     if (LL_DMA_IsActiveFlag_TC1(DMA1))
     {
         rx_seen = true;
-        LL_DMA_ClearFlag_TC1(DMA1);
-        LL_DMA_DisableStream(DMA1, LL_DMA_STREAM_1);
+        bl_usart_stop_rx_aync();
         LL_USART_EnableIT_RXNE(USART3);
         if (bl_usart_rx_async_callback)
             bl_usart_rx_async_callback();
