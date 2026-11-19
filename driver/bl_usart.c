@@ -9,6 +9,7 @@
 
 static bl_usart_rx_callback_t bl_usart_rx_callback;
 static bl_usart_rx_async_callback_t bl_usart_rx_async_callback;
+static volatile bool rx_seen;
 SemaphoreHandle_t bl_usart_tx_semaphore;
 
 uint32_t baudrate = 2 * 1000 * 1000;
@@ -102,6 +103,7 @@ void bl_dma_init(void)
 
 void bl_usart_init(void)
 {
+    rx_seen = false;
     bl_usart_tx_semaphore = xSemaphoreCreateBinary();
     configASSERT(bl_usart_tx_semaphore != NULL);
 
@@ -109,6 +111,11 @@ void bl_usart_init(void)
     bl_usart_lowlevel_init();
     bl_dma_init();
     bl_usart_it_init();
+}
+
+bool bl_usart_rx_seen(void)
+{
+    return rx_seen;
 }
 
 void bl_usart_write(uint8_t* data, uint16_t size)
@@ -162,6 +169,7 @@ void USART3_IRQHandler(void)
     if (LL_USART_IsEnabledIT_RXNE(USART3) && LL_USART_IsActiveFlag_RXNE(USART3))
     {
         uint8_t data = LL_USART_ReceiveData8(USART3);
+        rx_seen = true;
         if (bl_usart_rx_callback)
             bl_usart_rx_callback(&data, 1);
     }
@@ -186,6 +194,7 @@ void DMA1_Stream1_IRQHandler(void)
 {
     if (LL_DMA_IsActiveFlag_TC1(DMA1))
     {
+        rx_seen = true;
         LL_DMA_ClearFlag_TC1(DMA1);
         LL_DMA_DisableStream(DMA1, LL_DMA_STREAM_1);
         LL_USART_EnableIT_RXNE(USART3);

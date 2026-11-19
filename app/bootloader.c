@@ -597,6 +597,19 @@ static bool key_press_check(void)
     return false;
 }
 
+static bool rx_trap_app(void)
+{
+    for (uint32_t i = 0; i < BL_TRAP_BOOT_TIME; i += 10)
+    {
+        if (bl_usart_rx_seen())
+        {
+            log_w("data received, trap into boot");
+            return false;
+        }        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    return !bl_usart_rx_seen();
+}
+
 void bootloader_main(void)
 {
     log_i("Bootloader start...");
@@ -632,8 +645,7 @@ void bootloader_main(void)
 
     key_init(key2);
 
-    // bool trap_app = !key_trap_boot_check() && magic_header_trap_app_check() && !rb_revc_trap_boot_check();
-    bool trap_app = false;
+    bool trap_app = !key_trap_boot_check() && magic_header_trap_app_check() && rx_trap_app();
     if (trap_app)
     {
         log_w("trap app ok, enter app mode");
