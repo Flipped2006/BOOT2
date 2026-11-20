@@ -1,6 +1,6 @@
 # 一级引导
 
-在 WSL 的 `/home/wang/BOOT2` 下执行：
+在 Linux 或 WSL 的仓库根目录构建。
 
 ```sh
 make -j4
@@ -8,8 +8,7 @@ make -j4
 make boot1st -j4
 ```
 
-默认使用项目内的 `tools/gcc-arm-none-eabi/15.3/bin` 工具链；也可以通过
-`make GCC_PATH=/path/to/toolchain/bin -j4` 指定其他工具链目录。
+构建和自检按 `GCC_PATH`、项目内工具链、`PATH` 的顺序查找 Arm GNU Toolchain。可用 `make GCC_PATH=/path/to/toolchain/bin -j4` 指定构建工具链。
 
 烧录 `build/boot1st.hex`，或将 `build/boot1st.bin` 烧录到 **0x08000000**。
 `build/boot1st.elf` 也包含完整的 Flash 烧录内容，并带有一级引导的调试符号。
@@ -53,6 +52,8 @@ make boot1st -j4
 
 ```sh
 python3 boot1st/test_boot1st.py
+# 工具链未加入 PATH 时，将 GCC_PATH 指向工具链的 bin 目录
+# GCC_PATH=/path/to/toolchain/bin python3 boot1st/test_boot1st.py
 # Python 环境已安装 unicorn 时，可额外执行实际 ARM 指令：
 python3 boot1st/test_boot1st.py --emulate
 ```
