@@ -2,3 +2,8 @@ build/*
 tools/gcc-arm-none-eabi
 debug
 tests/*
+!tests/hil/
+tests/hil/__pycache__/
+tests/hil/results/
+tests/hil/*.local.json
+.venv-hil/

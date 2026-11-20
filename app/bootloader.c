@@ -380,8 +380,10 @@ static void bl_rx_timeout_check(void)
     TickType_t now = xTaskGetTickCountFromISR();
     if ((TickType_t)(now - rx_last_tick) >= pdMS_TO_TICKS(BL_BYTE_RESET_TIME_MS))
     {
+        uint8_t opcode = current_packet->opcode;
         bl_usart_abort_rx();
         packet_reset(current_packet);
+        bl_usart_tx_response(opcode, PACKET_ERRCODE_TIMEOUT, 0, NULL);
         log_d("rx timeout");
     }
 }
