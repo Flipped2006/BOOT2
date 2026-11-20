@@ -18,7 +18,9 @@
 
 ## 快速开始
 
-需要 STM32F407VE 实板、SWD 下载器和支持 2 Mbaud 的 3.3 V USB 转串口。Bootloader 使用 Linux 或 WSL、GNU Make 和 Arm GNU Toolchain 构建。Windows 上位机使用 .NET 10 SDK。从源码构建示例 APP 需要 Keil MDK 与 Python 3。示例 APP 与打包脚本位于配套工程 `STM32F4_EASYLOGGER_BOOT`，上位机位于 `SERIAL_UPDATER`。
+需要 STM32F407VE 实板、SWD 下载器和支持 2 Mbaud 的 3.3 V USB 转串口。Bootloader 使用 Linux 或 WSL、GNU Make 和 Arm GNU Toolchain 构建。
+
+从 Release 下载 Windows x64 上位机与示例 `.xbin`。上位机运行需 .NET 10 Desktop Runtime（x64）。[下载上位机](https://github.com/Flipped2006/BOOT2/releases/download/v0.0.1/SERIAL_UPDATER.exe) · [下载示例固件](https://github.com/Flipped2006/BOOT2/releases/download/v0.0.1/stm32f407_demo_magic_header.xbin) · [.NET 10 下载页](https://dotnet.microsoft.com/zh-cn/download/dotnet/10.0)
 
 ### 1. 构建并烧录 Bootloader
 
@@ -45,21 +47,28 @@ USB 转串口的 TX 接板端 RX，RX 接板端 TX，并连接 GND。
 
 板上已有可启动的 APP 时，复位后按住 `KEY2`（`PC4`，低电平有效）约 3 秒，等日志出现 `enter boot mode` 后松开。
 
-### 3. 打包并发送 APP
+### 3. 发送示例固件
 
-在 `STM32F4_EASYLOGGER_BOOT` 的 `mdk/stm32f407.uvprojx` 中构建示例 APP，链接起始地址为 `0x08010000`。Keil 的构建后命令会调用脚本生成 `.xbin`。已有 APP `.bin` 时，也可在配套 APP 工程根目录手动打包。
+打开 `SERIAL_UPDATER.exe`，选择升级串口和下载的 `.xbin`，点击 **升级**。上位机会依次写入并校验 APP 和 Magic Header，再发送 `BOOT`。在 USART1 上确认 APP 的启动日志 `[SYSTEM]: Build Date:`。
+
+示例 APP 会连接 SSID 为 `BOOT2LAB`、密码为 `boot2lab` 的 2.4 GHz 演示热点。连接成功后，串口会周期性输出 `[WiFi INFO]`。
+
+<details>
+<summary>从源码打包 APP 与运行上位机</summary>
+
+若已有配套工程，用 Keil MDK 打开 `STM32F4_EASYLOGGER_BOOT/mdk/stm32f407.uvprojx`。APP 链接起始地址为 `0x08010000`。构建后脚本生成 `.xbin`，也可在 APP 工程根目录手动打包已有的 `.bin`。
 
 ```powershell
 python .\script\gen_magic_header.py .\mdk\Objects\stm32f407.bin
 ```
 
-生成的 `generate/stm32f407_magic_header.xbin` 由 4 KiB 的 Magic Header 区域和 APP 二进制组成。已有兼容 `.xbin` 时可直接使用。在 `SERIAL_UPDATER` 工程根目录启动上位机。
+生成文件 `generate/stm32f407_magic_header.xbin` 含 4 KiB 的头部区域与 APP 二进制。已有 `SERIAL_UPDATER` 源码时，可安装 .NET 10 SDK 并在上位机工程目录执行以下命令。
 
 ```powershell
 dotnet run --project SERIAL_UPDATER.csproj
 ```
 
-选择升级串口和 `.xbin`，点击 **升级**。上位机依次写入并校验 APP 和 Magic Header，再发送 `BOOT`。在 USART1 上确认新 APP 的启动日志，示例 APP 会打印 `[SYSTEM]: Build Date:`。
+</details>
 
 ## 启动与升级流程
 

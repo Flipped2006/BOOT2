@@ -15,6 +15,8 @@
 
 测试会擦除并反复写入 APP 与信息头。协议、校验或启动判据未通过的轮次计为失败。
 
+可以先用上位机烧录 Release 中的示例固件，再在测试配置中选择同一份 `.xbin`。示例 APP 的周期日志依赖 2.4 GHz 演示热点，SSID 为 `BOOT2LAB`，密码为 `boot2lab`。[配套下载](https://github.com/Flipped2006/BOOT2/releases/tag/v0.0.1)
+
 本地配置 `tests/hil/hil.local.json`示例，路径按实际修改：
 
 ```json
@@ -28,11 +30,12 @@
 ```
 
 ```powershell
+py -3 -m venv .venv-hil
 .\.venv-hil\Scripts\python.exe -m pip install pyserial==3.5
 .\.venv-hil\Scripts\python.exe tests/hil/bootloader_metrics.py
 ```
 
-仅复测完整升级时，在仓库根目录运行：
+仅复测完整升级时，在仓库根目录执行以下命令。
 
 ```powershell
 .\.venv-hil\Scripts\python.exe tests/hil/bootloader_metrics.py --upgrade-only 100
