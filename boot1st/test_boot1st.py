@@ -6,6 +6,7 @@ Image/linker checks use the project's toolchain and Python's standard library.
 """
 
 import argparse
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -13,7 +14,11 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PREFIX = ROOT / "tools/gcc-arm-none-eabi/15.3/bin/arm-none-eabi-"
+BUNDLED_TOOLCHAIN = ROOT / "tools/gcc-arm-none-eabi/15.3/bin"
+GCC_PATH = os.environ.get("GCC_PATH")
+if GCC_PATH is None and (BUNDLED_TOOLCHAIN / "arm-none-eabi-gcc").is_file():
+    GCC_PATH = str(BUNDLED_TOOLCHAIN)
+PREFIX = str(ROOT / GCC_PATH / "arm-none-eabi-") if GCC_PATH else "arm-none-eabi-"
 FLASH = 0x08000000
 RAM = 0x20000000
 RAM_SIZE = 128 * 1024
@@ -23,7 +28,7 @@ MCU = ["-mcpu=cortex-m4", "-mthumb", "-mfpu=fpv4-sp-d16", "-mfloat-abi=hard"]
 
 
 def tool(name, *args, check=True):
-    return subprocess.run([str(PREFIX) + name, *map(str, args)], cwd=ROOT,
+    return subprocess.run([PREFIX + name, *map(str, args)], cwd=ROOT,
                           check=check, capture_output=True, text=True)
 
 
