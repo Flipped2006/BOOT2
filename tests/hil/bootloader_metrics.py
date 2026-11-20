@@ -309,9 +309,9 @@ class Board:
                     end_to_end_s=time.monotonic() - start)
 
 
-def save_results(output, rows, info):
+def save_results(output, rows, info, plan):
     summary = {}
-    for name, count in PLAN:
+    for name, count in plan:
         selected = [r for r in rows if r["test"] == name]
         counts = {state: sum(r["status"] == state for r in selected) for state in ("PASS", "FAIL", "ERROR")}
         summary[name] = dict(planned=count, **counts, not_run=count - len(selected),
@@ -333,7 +333,14 @@ def save_results(output, rows, info):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path(__file__).with_name("hil.local.json"))
+    parser.add_argument("--upgrade-only", type=int, metavar="ROUNDS",
+                        help="run only the specified number of complete upgrades")
     args = parser.parse_args()
+    plan = PLAN
+    if args.upgrade_only is not None:
+        if args.upgrade_only < 1:
+            parser.error("--upgrade-only requires a positive round count")
+        plan = (("upgrade", args.upgrade_only),)
     config = json.loads(args.config.read_text(encoding="utf-8-sig"))
     check(config["port"] != config["log_port"], "upgrade/log ports must differ")
     app, header, digest = load_xbin(config["firmware"])
@@ -351,7 +358,7 @@ def main():
             board.initialize()
             info["boot_sha256"] = hashlib.sha256(board.boot).hexdigest()
             stop = False
-            for name, count in PLAN:
+            for name, count in plan:
                 for index in range(1, count + 1):
                     board.case = f"{name}-{index:02d}"
                     row = dict(test=name, round=index, status="PASS", reason="", metrics={})
@@ -367,7 +374,7 @@ def main():
                     row["elapsed_s"] = time.monotonic() - start
                     rows.append(row)
                     board.note("result", **row)
-                    save_results(output, rows, info)
+                    save_results(output, rows, info, plan)
                     print(f"{row['status']} {name} {index}/{count} {row['reason']}", flush=True)
                     if stop:
                         break
@@ -376,11 +383,13 @@ def main():
     except (Exception, KeyboardInterrupt) as error:
         info["error"] = str(error) or "interrupted"
     finally:
-        summary = save_results(output, rows, info)
+        summary = save_results(output, rows, info, plan)
         for name, item in summary.items():
             print(f"{name}: {item['PASS']}/{item['planned']} FAIL={item['FAIL']} ERROR={item['ERROR']} NOT_RUN={item['not_run']}")
         print(f"Evidence: {output.resolve()}")
-    return 0 if len(rows) == 60 and all(r["status"] == "PASS" for r in rows) and "error" not in info else 1
+    planned = sum(count for _, count in plan)
+    all_passed = len(rows) == planned and all(row["status"] == "PASS" for row in rows)
+    return 0 if all_passed and "error" not in info else 1
 
 
 if __name__ == "__main__":
