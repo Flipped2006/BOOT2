@@ -2,9 +2,13 @@
 
 面向 **STM32F407VE** 的两级串口 Bootloader。一级引导从 Flash 启动，二级引导在 RAM 中通过串口接收、写入和校验固件，并启动更新后的 APP。
 
-![单包处理耗时对比，异步化前 49.53 ms，异步化后按时序推算约 32.76 ms](docs/benchmarks/packet-processing-time.png)
+## 异步化前后时序
 
-单包耗时按原始时序图比较。接收下一包时可并行写入上一包，约 **16.77 ms** 的 Flash 写入时间被重叠，原图标注单包耗时缩短约 **33.8%**。[异步化前时序](docs/项目展示图/ramboot异步化前时序图.png) · [异步化后时序](docs/项目展示图/ramboot异步化后时序图.png)
+| 异步化前 | 异步化后 |
+| :---: | :---: |
+| [<img src="docs/项目展示图/ramboot异步化前时序图.png" width="400" alt="异步化前，DMA 接收与 Flash 写入串行">](docs/项目展示图/ramboot异步化前时序图.png) | [<img src="docs/项目展示图/ramboot异步化后时序图.png" width="400" alt="异步化后，下一包接收与上一包 Flash 写入重叠">](docs/项目展示图/ramboot异步化后时序图.png) |
+
+异步化前，原始时序图记录的单包耗时为 **49.53 ms**。异步化后，约 **16.77 ms** 的 Flash 写入时间与下一包接收重叠，原图标注单包耗时缩短约 **33.8%**。
 
 以 **2 Mbaud** 升级 **335.18 KiB** 的 `.xbin`，20 次实板升级的协议耗时均值为 **6.672 s**，P95 为 **6.761 s**，平均有效吞吐为 **50.24 KiB/s**。[逐次计时](docs/benchmarks/upgrade-protocol-samples.csv)
 
@@ -72,15 +76,17 @@ dotnet run --project SERIAL_UPDATER.csproj
 
 ## 启动与升级流程
 
-```mermaid
-flowchart LR
-    stage1["一级引导 · Flash"] -->|复制二级镜像| stage2["二级引导 · SRAM"]
-    host["PC 上位机 · .xbin"] -->|USART3 分帧传输| stage2
-    stage2 -->|依次擦写和校验| flash["APP → Magic Header"]
-    flash -->|启动校验通过| app["启动 APP"]
-```
+### 系统架构
+
+[![BOOT2 系统架构图，展示上位机、两级引导、中间件、驱动和存储分层](docs/项目展示图/系统框架图.drawio.png)](docs/项目展示图/系统框架图.drawio.png)
+
+### 升级数据流
+
+[![BOOT2 升级数据流图，从上位机拆包经 USART3 收帧、任务队列和 Flash 校验到 APP 启动](docs/项目展示图/数据流图.png)](docs/项目展示图/数据流图.png)
 
 普通 `PROGRAM` 包入队后即可应答，让下一包接收与上一包写入重叠。每个写入阶段的最后一包等累计写入完成再应答，随后由 `VERIFY` 校验 Flash 内容。
+
+### Flash 分区
 
 | Flash 区域 | 起始地址或位置 |
 | --- | --- |
